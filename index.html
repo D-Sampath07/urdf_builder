@@ -11,6 +11,7 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/ColladaLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/STLExporter.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script type="module">
@@ -74,10 +75,12 @@ window.MeshoptSimplifierReady.catch(() => {});
     </label>
     <button id="btn-import" class="btn flex items-center gap-1.5"><i data-lucide="upload" class="w-4 h-4 text-blue-400"></i> Import STL/OBJ/STEP</button>
     <button id="btn-optimize-open" class="btn flex items-center gap-1.5 !border-emerald-700 !text-emerald-300" title="Reduce triangle counts while keeping joint frames and link transforms unchanged"><i data-lucide="scissors" class="w-4 h-4"></i> Optimize Meshes</button>
-    <input type="file" id="file-mesh" accept=".stl,.obj,.step,.stp" multiple class="hidden">
+    <input type="file" id="file-mesh" accept=".stl,.obj,.dae,.step,.stp" multiple class="hidden">
     <button id="btn-save" class="btn flex items-center gap-1.5"><i data-lucide="save" class="w-4 h-4 text-amber-400"></i> Save</button>
-    <button id="btn-load" class="btn flex items-center gap-1.5"><i data-lucide="folder-open" class="w-4 h-4 text-amber-400"></i> Load</button>
-    <input type="file" id="file-project" accept=".json" class="hidden">
+    <button id="btn-load" class="btn flex items-center gap-1.5" title="Load a saved JSON project, a URDF with its mesh files, or a ZIP ROS package"><i data-lucide="folder-open" class="w-4 h-4 text-amber-400"></i> Load JSON / URDF</button>
+    <button id="btn-load-folder" class="btn flex items-center gap-1.5" title="Load a whole extracted robot description folder"><i data-lucide="folder" class="w-4 h-4"></i> Folder</button>
+    <input type="file" id="file-project" accept=".json,.urdf,.xml,.zip,.stl,.obj,.dae" multiple class="hidden">
+    <input type="file" id="file-urdf-folder" webkitdirectory directory multiple class="hidden">
     <button id="btn-validate" class="btn flex items-center gap-1.5"><i data-lucide="shield-check" class="w-4 h-4 text-emerald-400"></i> Validate</button>
     <button id="btn-export-urdf" class="btn flex items-center gap-1.5"><i data-lucide="file-code" class="w-4 h-4 text-purple-400"></i> URDF</button>
     <button id="btn-export-zip" class="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium flex items-center gap-1.5"><i data-lucide="package-check" class="w-4 h-4"></i> ROS Package (.zip)</button>
@@ -414,7 +417,7 @@ function descendants(id) {
 function makeLink(name) {
   const id = nid('L');
   const l = { id, name: uniqueName(name, 'link'), geometry: null, originalGeometry: null, props: null,
-    visual: { xyz: [0, 0, 0], rpy: [0, 0, 0] }, color: '#94a3b8', alpha: 1,
+    visual: { xyz: [0, 0, 0], rpy: [0, 0, 0] }, collisionOrigin: null, color: '#94a3b8', alpha: 1,
     collision: 'visual', density: 2700, mass: 0, inertiaOverride: null };
   S.links[id] = l; return l;
 }
@@ -543,7 +546,7 @@ function linkInertia(l) {
 function collisionSpec(l) {
   if (!l.props || l.collision === 'none' || l.collision === 'visual') return null;
   const s = l.props.size, o = visualPoint(l, l.props.center);
-  const pose = { xyz: [o.x, o.y, o.z], rpy: l.visual.rpy };
+  const pose = l.collisionOrigin || { xyz: [o.x, o.y, o.z], rpy: l.visual.rpy };
   if (l.collision === 'box') return { type: 'box', size: s, pose };
   if (l.collision === 'cylinder') return { type: 'cylinder', radius: Math.max(s[0], s[1]) / 2, length: s[2], pose };
   return { type: 'sphere', radius: Math.hypot(s[0], s[1], s[2]) / 2, pose };
@@ -1140,6 +1143,7 @@ async function importFiles(fileList, forceTarget) {
       let parts;
       if (ext === 'stl') parts = [{ name: base, geometry: new THREE.STLLoader().parse(await file.arrayBuffer()) }];
       else if (ext === 'obj') parts = [{ name: base, geometry: objToGeometry(new THREE.OBJLoader().parse(await file.text())) }];
+      else if (ext === 'dae') parts = [{ name: base, geometry: objToGeometry(new THREE.ColladaLoader().parse(await file.text(), '').scene) }];
       else if (ext === 'step' || ext === 'stp') parts = await parseStep(await file.arrayBuffer(), base);
       else { toast(`Unsupported file: ${file.name}`, 'warn'); continue; }
       for (const part of parts) {
@@ -1148,7 +1152,7 @@ async function importFiles(fileList, forceTarget) {
         let link;
         if (parentFree) { link = S.links[parentId]; parentFree = false; }
         else { link = makeLink(part.name); addJoint(parentId, link.id, 'fixed'); }
-        link.geometry = g; link.originalGeometry = null; if (part.color) link.color = part.color;
+        link.geometry = g; link.originalGeometry = null; link.inertialOverride = null; if (part.color) link.color = part.color;
         computeProps(link); link.mass = link.props.volume * link.density; link.inertiaOverride = null;
         if (!firstId) firstId = link.id; n++; lastSize = link.props.size;
       }
@@ -1157,6 +1161,361 @@ async function importFiles(fileList, forceTarget) {
   if (!n) return;
   refreshAll(); fitView(); selectEntity(firstId, 'link');
   toast(`Imported ${n} part(s). Last size ${lastSize.map(v => v.toFixed(3)).join(' × ')} m — if that's wrong, change Units and re-import.`);
+}
+
+/* ============================================================
+   URDF / ROS PACKAGE IMPORT
+   Accepts a .urdf with companion mesh files selected together, an exported ROS ZIP,
+   or an extracted package folder selected with the Folder button. The editor's JSON
+   format remains supported as before.
+   ============================================================ */
+function urdfChild(parent, tag) {
+  return Array.from(parent?.children || []).find(el => el.localName === tag) || null;
+}
+function urdfChildren(parent, tag) {
+  return Array.from(parent?.children || []).filter(el => el.localName === tag);
+}
+function parseNumList(value, fallback) {
+  if (!value || !String(value).trim()) return [...fallback];
+  const vals = String(value).trim().split(/[\s,]+/).map(Number);
+  return vals.length === fallback.length && vals.every(Number.isFinite) ? vals : [...fallback];
+}
+function urdfPose(el) {
+  return { xyz: parseNumList(el?.getAttribute('xyz'), [0,0,0]),
+           rpy: parseNumList(el?.getAttribute('rpy'), [0,0,0]).map(v => v * R2D) };
+}
+function normalizeAssetPath(path) {
+  let p = String(path || '').replace(/\\/g, '/').trim();
+  try { p = decodeURIComponent(p); } catch (_) {}
+  p = p.replace(/^package:\/\//i, '').replace(/^file:\/\//i, '').replace(/^\/?[a-z]:\//i, '');
+  p = p.replace(/^\/+/, '');
+  const out = [];
+  for (const part of p.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') { if (out.length) out.pop(); continue; }
+    out.push(part);
+  }
+  return out.join('/');
+}
+function buildAssetIndex(assets) {
+  const byPath = new Map(), byBase = new Map();
+  assets.forEach(a => {
+    a.normalizedPath = normalizeAssetPath(a.path || a.name);
+    const key = a.normalizedPath.toLowerCase();
+    if (key && !byPath.has(key)) byPath.set(key, a);
+    const base = a.normalizedPath.split('/').pop().toLowerCase();
+    if (!byBase.has(base)) byBase.set(base, []);
+    byBase.get(base).push(a);
+  });
+  return { byPath, byBase, assets };
+}
+function resolveURDFAsset(filename, index, urdfPath) {
+  const raw = normalizeAssetPath(filename);
+  const candidates = [raw];
+  if (raw.startsWith('meshes/')) candidates.push(raw);
+  if (urdfPath) {
+    const dir = normalizeAssetPath(urdfPath).split('/').slice(0,-1).join('/');
+    if (dir) candidates.push(normalizeAssetPath(`${dir}/${raw}`));
+  }
+  for (const c of candidates) {
+    const found = index.byPath.get(c.toLowerCase());
+    if (found) return { asset: found, ambiguous: false };
+    // package://<pkg>/meshes/x.stl often maps to <package-root>/meshes/x.stl in a ZIP
+    const suffixes = index.assets.filter(a => a.normalizedPath.toLowerCase().endsWith('/' + c.toLowerCase()));
+    if (suffixes.length === 1) return { asset: suffixes[0], ambiguous: false };
+  }
+  const base = raw.split('/').pop().toLowerCase();
+  const matches = index.byBase.get(base) || [];
+  if (matches.length === 1) return { asset: matches[0], ambiguous: false };
+  if (matches.length > 1) return { asset: null, ambiguous: true };
+  return { asset: null, ambiguous: false };
+}
+async function geometryFromURDFGeometry(geometryEl, assetsIndex, urdfPath) {
+  if (!geometryEl) throw new Error('A visual geometry element is empty.');
+  const meshEl = urdfChild(geometryEl, 'mesh');
+  if (meshEl) {
+    const filename = meshEl.getAttribute('filename');
+    if (!filename) throw new Error('A <mesh> is missing its filename.');
+    const match = resolveURDFAsset(filename, assetsIndex, urdfPath);
+    if (!match.asset) {
+      if (match.ambiguous) throw new Error(`Mesh "${filename}" matches multiple files. Load a ZIP or package folder to preserve paths.`);
+      throw new Error(`Mesh "${filename}" was not provided. Select the URDF together with all referenced mesh files, or load the complete package ZIP/folder.`);
+    }
+    const ext = match.asset.name.split('.').pop().toLowerCase();
+    let src;
+    if (ext === 'stl') src = new THREE.STLLoader().parse(await match.asset.getBuffer());
+    else if (ext === 'obj') src = objToGeometry(new THREE.OBJLoader().parse(await match.asset.getText()));
+    else if (ext === 'dae') src = objToGeometry(new THREE.ColladaLoader().parse(await match.asset.getText(), '').scene);
+    else throw new Error(`Mesh format .${ext} is not supported by this browser importer yet (supported: STL, OBJ, and DAE).`);
+    let geom = geometryFromPositions(new Float32Array(nonIndexedPositions(src)).slice());
+    const scale = parseNumList(meshEl.getAttribute('scale'), [1,1,1]);
+    geom.scale(scale[0], scale[1], scale[2]);
+    geom.computeVertexNormals(); geom.computeBoundingBox(); geom.computeBoundingSphere();
+    return { geometry: geom, sourcePath: match.asset.normalizedPath, sourceFilename: filename, kind: 'mesh' };
+  }
+  const box = urdfChild(geometryEl, 'box');
+  if (box) {
+    const size = parseNumList(box.getAttribute('size'), [1,1,1]);
+    const g = new THREE.BoxGeometry(size[0], size[1], size[2]);
+    return { geometry: geometryFromPositions(new Float32Array(nonIndexedPositions(g)).slice()), kind: 'box' };
+  }
+  const cylinder = urdfChild(geometryEl, 'cylinder');
+  if (cylinder) {
+    const r = Number(cylinder.getAttribute('radius')), len = Number(cylinder.getAttribute('length'));
+    if (!(r > 0 && len > 0)) throw new Error('Cylinder radius and length must be positive.');
+    const g = new THREE.CylinderGeometry(r, r, len, 48); g.rotateX(Math.PI / 2);
+    return { geometry: geometryFromPositions(new Float32Array(nonIndexedPositions(g)).slice()), kind: 'cylinder' };
+  }
+  const sphere = urdfChild(geometryEl, 'sphere');
+  if (sphere) {
+    const r = Number(sphere.getAttribute('radius'));
+    if (!(r > 0)) throw new Error('Sphere radius must be positive.');
+    const g = new THREE.SphereGeometry(r, 32, 20);
+    return { geometry: geometryFromPositions(new Float32Array(nonIndexedPositions(g)).slice()), kind: 'sphere' };
+  }
+  throw new Error('Unsupported or empty URDF geometry. This importer supports mesh, box, cylinder, and sphere geometry.');
+}
+function readURDFColor(visualEl, materialLibrary) {
+  const matEl = urdfChild(visualEl, 'material');
+  if (!matEl) return null;
+  const colorEl = urdfChild(matEl, 'color');
+  let rgba = colorEl ? parseNumList(colorEl.getAttribute('rgba'), [0.59,0.64,0.72,1]) : null;
+  if (!rgba && matEl.getAttribute('name')) rgba = materialLibrary.get(matEl.getAttribute('name')) || null;
+  if (!rgba) return null;
+  const clamp = v => Math.max(0,Math.min(1,v));
+  const c = new THREE.Color(clamp(rgba[0]), clamp(rgba[1]), clamp(rgba[2]));
+  return { color: '#' + c.getHexString(), alpha: clamp(rgba[3] ?? 1) };
+}
+function parseURDFJoint(jel, linkIdByName, jointIdByName) {
+  const name = jel.getAttribute('name') || 'joint';
+  const typeRaw = jel.getAttribute('type') || 'fixed';
+  const supported = ['fixed','revolute','continuous','prismatic'];
+  const type = supported.includes(typeRaw) ? typeRaw : 'fixed';
+  const parentName = urdfChild(jel, 'parent')?.getAttribute('link');
+  const childName = urdfChild(jel, 'child')?.getAttribute('link');
+  if (!linkIdByName.has(parentName) || !linkIdByName.has(childName)) throw new Error(`Joint "${name}" references a missing link.`);
+  const origin = urdfPose(urdfChild(jel, 'origin'));
+  const axis = parseNumList(urdfChild(jel, 'axis')?.getAttribute('xyz'), [1,0,0]);
+  const limit = urdfChild(jel, 'limit');
+  const lower = Number(limit?.getAttribute('lower'));
+  const upper = Number(limit?.getAttribute('upper'));
+  const velocity = Number(limit?.getAttribute('velocity'));
+  const effort = Number(limit?.getAttribute('effort'));
+  const mimicEl = urdfChild(jel, 'mimic');
+  return {
+    id: jointIdByName.get(name), name: sanitize(name), typeRaw, type,
+    parent: linkIdByName.get(parentName), child: linkIdByName.get(childName), origin, axis,
+    limits: {
+      lower: Number.isFinite(lower) ? lower : -Math.PI/2,
+      upper: Number.isFinite(upper) ? upper : Math.PI/2,
+      velocity: Number.isFinite(velocity) && velocity > 0 ? velocity : 1,
+      effort: Number.isFinite(effort) && effort > 0 ? effort : 10
+    }, value: 0,
+    mimicRaw: mimicEl ? { jointName: mimicEl.getAttribute('joint'), multiplier: Number(mimicEl.getAttribute('multiplier') ?? 1), offset: Number(mimicEl.getAttribute('offset') ?? 0) } : null,
+    mimic: null
+  };
+}
+async function importURDFText(urdfText, urdfPath, assets) {
+  const xml = new DOMParser().parseFromString(urdfText, 'application/xml');
+  if (xml.querySelector('parsererror')) throw new Error('The URDF/XML could not be parsed.');
+  const robotEl = xml.documentElement;
+  if (!robotEl || robotEl.localName !== 'robot') throw new Error('Selected XML is not a URDF robot description.');
+  const linkEls = urdfChildren(robotEl, 'link');
+  const jointEls = urdfChildren(robotEl, 'joint');
+  if (!linkEls.length) throw new Error('URDF contains no links.');
+  const names = new Set();
+  for (const el of linkEls) {
+    const name = el.getAttribute('name');
+    if (!name) throw new Error('A link is missing its name.');
+    if (names.has(name)) throw new Error(`Duplicate URDF link name: ${name}`);
+    names.add(name);
+  }
+  const assetsIndex = buildAssetIndex(assets);
+  const materialLibrary = new Map();
+  urdfChildren(robotEl, 'material').forEach(m => {
+    const c = urdfChild(m, 'color');
+    if (m.getAttribute('name') && c) materialLibrary.set(m.getAttribute('name'), parseNumList(c.getAttribute('rgba'), [0.59,0.64,0.72,1]));
+  });
+  const warnings = [], pendingLinks = [];
+  for (const le of linkEls) {
+    const linkName = le.getAttribute('name');
+    const visuals = urdfChildren(le, 'visual');
+    const visualParts = [];
+    for (const ve of visuals) {
+      const ge = urdfChild(ve, 'geometry');
+      const parsed = await geometryFromURDFGeometry(ge, assetsIndex, urdfPath);
+      visualParts.push({ ...parsed, pose: urdfPose(urdfChild(ve, 'origin')), color: readURDFColor(ve, materialLibrary) });
+    }
+    let geometry = null, visual = { xyz:[0,0,0], rpy:[0,0,0] }, color = '#94a3b8', alpha = 1;
+    if (visualParts.length === 1) {
+      geometry = visualParts[0].geometry; visual = visualParts[0].pose;
+      if (visualParts[0].color) { color = visualParts[0].color.color; alpha = visualParts[0].color.alpha; }
+    } else if (visualParts.length > 1) {
+      // The editor uses one mesh per link, so combine multiple visuals after applying each visual's
+      // origin. This keeps the rendered link shape in the exact same link frame.
+      const mergedPositions = [];
+      for (const part of visualParts) {
+        part.geometry.applyMatrix4(poseMatrix(part.pose.xyz, part.pose.rpy));
+        mergedPositions.push(nonIndexedPositions(part.geometry));
+      }
+      geometry = geometryFromPositions(mergeToGeometry(mergedPositions).attributes.position.array.slice());
+      visual = { xyz:[0,0,0], rpy:[0,0,0] };
+      const c = visualParts.find(p => p.color)?.color;
+      if (c) { color = c.color; alpha = c.alpha; }
+      warnings.push(`Link "${linkName}" had ${visualParts.length} visual geometries; they were merged into one mesh. Per-visual material colors are reduced to the first color.`);
+    }
+    let inertialOverride = null, mass = 0, inertiaOverride = null;
+    const inertialEl = urdfChild(le, 'inertial');
+    if (inertialEl) {
+      const me = urdfChild(inertialEl, 'mass'), ie = urdfChild(inertialEl, 'inertia');
+      const m = Number(me?.getAttribute('value'));
+      if (ie && Number.isFinite(m) && m >= 0) {
+        const inert = {};
+        ['ixx','ixy','ixz','iyy','iyz','izz'].forEach(k => inert[k] = Number(ie.getAttribute(k) ?? 0));
+        if (Object.values(inert).every(Number.isFinite)) {
+          inertialOverride = { origin: urdfPose(urdfChild(inertialEl, 'origin')), mass: m, inertia: inert };
+          inertiaOverride = { ...inert }; mass = m;
+        }
+      }
+    }
+    // This editor currently uses the same visual mesh for collision, with optional bounding
+    // primitives. If the source uses an independent collision mesh, report it instead of silently
+    // claiming that mesh was preserved.
+    const collisions = urdfChildren(le, 'collision');
+    let collision = collisions.length ? 'visual' : 'none', collisionOrigin = null;
+    if (collisions.length > 1) warnings.push(`Link "${linkName}" has multiple collision geometries; the editor supports one collision setting per link.`);
+    for (const ce of collisions.slice(0,1)) {
+      const cg = urdfChild(ce, 'geometry');
+      const cm = urdfChild(cg, 'mesh');
+      const vm = visualParts.length === 1 ? urdfChild(urdfChild(visualParts[0] && urdfChild(le, 'visual'), 'geometry'), 'mesh') : null;
+      if (cm && vm && normalizeAssetPath(cm.getAttribute('filename')).toLowerCase() === normalizeAssetPath(vm.getAttribute('filename')).toLowerCase()) {
+        const cp = urdfPose(urdfChild(ce, 'origin'));
+        const collisionScale = parseNumList(cm.getAttribute('scale'), [1,1,1]);
+        const visualScale = parseNumList(vm.getAttribute('scale'), [1,1,1]);
+        collisionOrigin = cp;
+        if (!collisionScale.every((v,i) => Math.abs(v-visualScale[i]) < 1e-7))
+          warnings.push(`Link "${linkName}" uses the same mesh with a different collision scale; the visual scale is used for both.`);
+      } else if (cm || urdfChild(cg,'box') || urdfChild(cg,'cylinder') || urdfChild(cg,'sphere')) {
+        const source = cm?.getAttribute('filename') || 'primitive geometry';
+        warnings.push(`Link "${linkName}" has separate collision geometry (${source}); this editor currently exports its visual mesh for collision or a bounding primitive, not that separate collision shape.`);
+      }
+    }
+    pendingLinks.push({ name: sanitize(linkName), sourceName: linkName, geometry, visual, collisionOrigin, color, alpha, mass, inertiaOverride, inertialOverride, collision });
+  }
+  const seenJointNames = new Set();
+  for (const je of jointEls) {
+    const jn = je.getAttribute('name');
+    const pn = urdfChild(je,'parent')?.getAttribute('link');
+    const cn = urdfChild(je,'child')?.getAttribute('link');
+    if (!jn) throw new Error('A joint is missing its name.');
+    if (seenJointNames.has(jn)) throw new Error(`Duplicate URDF joint name: ${jn}`);
+    seenJointNames.add(jn);
+    if (!names.has(pn) || !names.has(cn)) throw new Error(`Joint "${jn}" references a missing parent or child link.`);
+    if (pn === cn) throw new Error(`Joint "${jn}" connects a link to itself.`);
+  }
+  const childNames = new Set(jointEls.map(j => urdfChild(j,'child')?.getAttribute('link')).filter(Boolean));
+  const rootNames = linkEls.map(l => l.getAttribute('name')).filter(name => !childNames.has(name));
+  if (rootNames.length !== 1) throw new Error(`Expected one root link, found ${rootNames.length}. URDF must describe a single kinematic tree.`);
+  // Only replace the current project after the entire XML and every referenced visual mesh parsed.
+  S.links = {}; S.joints = {}; S.sel = null; S.uid = 0;
+  const linkIdByName = new Map();
+  pendingLinks.forEach(p => {
+    const l = makeLink(p.name);
+    l.geometry = p.geometry; l.visual = p.visual; l.collisionOrigin = p.collisionOrigin; l.color = p.color; l.alpha = p.alpha;
+    l.collision = p.collision; l.mass = p.mass; l.inertiaOverride = p.inertiaOverride; l.inertialOverride = p.inertialOverride;
+    if (l.geometry) { computeProps(l); if (!(l.mass > 0)) l.mass = l.props.volume * l.density; }
+    linkIdByName.set(p.sourceName, l.id);
+  });
+  S.root = linkIdByName.get(rootNames[0]);
+  S.robotName = sanitize(robotEl.getAttribute('name') || 'my_robot');
+  S.pkg = sanitizePackage((normalizeAssetPath(urdfPath).split('/').slice(0,-2).pop()) || `${S.robotName}_description`);
+  S.ros = '2';
+  // Build id map first, then resolve joints and mimic references by original joint names.
+  const jointIdByName = new Map();
+  jointEls.forEach(je => {
+    const n = je.getAttribute('name') || 'joint';
+    if (jointIdByName.has(n)) throw new Error(`Duplicate URDF joint name: ${n}`);
+    jointIdByName.set(n, nid('J'));
+  });
+  const importedJoints = jointEls.map(je => parseURDFJoint(je, linkIdByName, jointIdByName));
+  const usedJointNames = new Set();
+  importedJoints.forEach(j => {
+    const base = j.name || 'joint'; let name = base, suffix = 2;
+    while (usedJointNames.has(name.toLowerCase())) name = `${base}_${suffix++}`;
+    j.name = name; usedJointNames.add(name.toLowerCase());
+  });
+  importedJoints.forEach(j => {
+    if (j.mimicRaw) {
+      const sourceId = jointIdByName.get(j.mimicRaw.jointName);
+      if (!sourceId) warnings.push(`Joint "${j.name}" mimics missing joint "${j.mimicRaw.jointName}"; mimic was dropped.`);
+      else j.mimic = { jointId: sourceId, multiplier: Number.isFinite(j.mimicRaw.multiplier) ? j.mimicRaw.multiplier : 1, offset: Number.isFinite(j.mimicRaw.offset) ? j.mimicRaw.offset : 0 };
+    }
+    delete j.mimicRaw; delete j.typeRaw;
+    S.joints[j.id] = j;
+  });
+  const unsupported = jointEls.filter(j => !['fixed','revolute','continuous','prismatic'].includes(j.getAttribute('type')));
+  if (unsupported.length) warnings.push(`${unsupported.length} unsupported joint type(s) (planar/floating or custom) were converted to fixed joints because this editor controls fixed, revolute, continuous, and prismatic joints.`);
+  $('set-robot').value = S.robotName; $('set-pkg').value = S.pkg; $('set-ros').value = S.ros;
+  clearBrokenMimicReferences(); resetPointPickState(); refreshAll(); fitView();
+  const meshCount = Object.values(S.links).filter(l => l.geometry).length;
+  let msg = `Imported URDF: ${Object.keys(S.links).length} links, ${Object.keys(S.joints).length} joints, ${meshCount} mesh/geometry links.`;
+  if (warnings.length) {
+    console.warn('URDF import warnings:', warnings);
+    const firstWarning = warnings[0].length > 190 ? warnings[0].slice(0,187) + '…' : warnings[0];
+    msg += ` ${warnings.length} compatibility warning(s). First: ${firstWarning}${warnings.length > 1 ? ' See browser console for the full list.' : ''}`;
+    toast(msg, 'warn');
+  } else toast(msg);
+  updateOptimizeMeshTable();
+}
+async function loadAnyProject(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  try {
+    const json = files.find(f => /\.json$/i.test(f.name));
+    if (json && files.length === 1) { resetPointPickState(); await loadProject(json); return; }
+    const assetFiles = [];
+    const urdfFiles = [];
+    for (const f of files) {
+      const path = f.webkitRelativePath || f.name;
+      const ext = f.name.split('.').pop().toLowerCase();
+      if (ext === 'zip') {
+        const zip = await JSZip.loadAsync(await f.arrayBuffer());
+        for (const [zipPath, entry] of Object.entries(zip.files)) {
+          if (entry.dir) continue;
+          const zext = zipPath.split('.').pop().toLowerCase();
+          if (zext === 'urdf' || zext === 'xml') {
+            const txt = await entry.async('string');
+            if (/<robot\b/i.test(txt)) urdfFiles.push({ path: zipPath, text: txt });
+          } else if (['stl','obj','dae'].includes(zext)) {
+            const buf = await entry.async('arraybuffer');
+            assetFiles.push({ path: zipPath, name: zipPath.split('/').pop(), getBuffer: async () => buf, getText: async () => new TextDecoder().decode(buf) });
+          }
+        }
+      } else if (ext === 'urdf' || ext === 'xml') {
+        const text = await f.text();
+        if (/<robot\b/i.test(text)) urdfFiles.push({ path, text });
+      } else if (['stl','obj','dae'].includes(ext)) {
+        assetFiles.push({ path, name: f.name, getBuffer: () => f.arrayBuffer(), getText: () => f.text() });
+      }
+    }
+    if (urdfFiles.length) {
+      let chosen = urdfFiles[0];
+      if (urdfFiles.length > 1) {
+        const choices = urdfFiles.map((u,i) => `${i+1}. ${u.path}`).join('\n');
+        const selection = Number(prompt(`Multiple URDF files found. Enter the number to load:\n${choices}`, '1'));
+        if (!Number.isInteger(selection) || selection < 1 || selection > urdfFiles.length) return;
+        chosen = urdfFiles[selection-1];
+      }
+      await importURDFText(chosen.text, chosen.path, assetFiles);
+      return;
+    }
+    if (json) { resetPointPickState(); await loadProject(json); return; }
+    if (files.some(f => /\.(stl|obj|dae|step|stp)$/i.test(f.name))) { await importFiles(files); return; }
+    throw new Error('No URDF robot description, project JSON, or supported mesh files were found. For folders, choose the package folder with the Folder button.');
+  } catch (err) {
+    console.error(err);
+    toast('Load failed: ' + (err?.message || err), 'error');
+  }
 }
 
 /* ============================================================
@@ -1172,7 +1531,11 @@ function generateURDF() {
   const pkg = S.pkg; let x = `<?xml version="1.0"?>\n<robot name="${esc(S.robotName)}">\n\n`;
   Object.values(S.links).forEach(l => {
     x += `  <link name="${esc(l.name)}">\n`;
-    if (l.props && l.mass > 0) {
+    if (l.inertialOverride) {
+      const ii = l.inertialOverride;
+      x += `    <inertial>\n      <origin xyz="${xyzS(ii.origin?.xyz || [0,0,0])}" rpy="${rpyS(ii.origin?.rpy || [0,0,0])}"/>\n      <mass value="${fsig(ii.mass)}"/>\n`;
+      x += `      <inertia ixx="${fsig(ii.inertia.ixx)}" ixy="${fsig(ii.inertia.ixy)}" ixz="${fsig(ii.inertia.ixz)}" iyy="${fsig(ii.inertia.iyy)}" iyz="${fsig(ii.inertia.iyz)}" izz="${fsig(ii.inertia.izz)}"/>\n    </inertial>\n`;
+    } else if (l.props && l.mass > 0) {
       const I = linkInertia(l), c = visualPoint(l, l.props.com);
       x += `    <inertial>\n      <origin xyz="${xyzS([c.x, c.y, c.z])}" rpy="${rpyS(l.visual.rpy)}"/>\n      <mass value="${fsig(l.mass)}"/>\n`;
       x += `      <inertia ixx="${fsig(I.ixx)}" ixy="${fsig(I.ixy)}" ixz="${fsig(I.ixz)}" iyy="${fsig(I.iyy)}" iyz="${fsig(I.iyz)}" izz="${fsig(I.izz)}"/>\n    </inertial>\n`;
@@ -1184,7 +1547,7 @@ function generateURDF() {
       if (l.collision !== 'none') {
         const spec = collisionSpec(l);
         x += `    <collision>\n`;
-        if (!spec) x += `      <origin xyz="${xyzS(l.visual.xyz)}" rpy="${rpyS(l.visual.rpy)}"/>\n      <geometry><mesh filename="package://${pkg}/meshes/${l.name}.stl"/></geometry>\n`;
+        if (!spec) { const cp = l.collisionOrigin || l.visual; x += `      <origin xyz="${xyzS(cp.xyz)}" rpy="${rpyS(cp.rpy)}"/>\n      <geometry><mesh filename="package://${pkg}/meshes/${l.name}.stl"/></geometry>\n`; }
         else {
           x += `      <origin xyz="${xyzS(spec.pose.xyz)}" rpy="${rpyS(spec.pose.rpy)}"/>\n      <geometry>`;
           if (spec.type === 'box') x += `<box size="${xyzS(spec.size)}"/>`;
@@ -1525,7 +1888,7 @@ async function optimizeAllMeshes() {
   optimizingMeshes = true;
   runButton.disabled = true; restoreButton.disabled = true;
   runButton.classList.add('opacity-50');
-  const busyButtons = ['btn-optimize-open', 'btn-import', 'btn-load', 'btn-save', 'btn-validate', 'btn-export-urdf', 'btn-export-zip', 'btn-del-link', 'btn-del-joint'];
+  const busyButtons = ['btn-optimize-open', 'btn-import', 'btn-load', 'btn-load-folder', 'btn-save', 'btn-validate', 'btn-export-urdf', 'btn-export-zip', 'btn-del-link', 'btn-del-joint'];
   busyButtons.forEach(id => { if ($(id)) $(id).disabled = true; });
   resultPanel.classList.add('hidden');
   let simplifier;
@@ -1828,7 +2191,9 @@ window.onload = () => {
   $('file-mesh').onchange = e => { importFiles(e.target.files); e.target.value = ''; };
   $('btn-save').onclick = saveProject;
   $('btn-load').onclick = () => $('file-project').click();
-  $('file-project').onchange = e => { if (e.target.files[0]) { resetPointPickState(); loadProject(e.target.files[0]); } e.target.value = ''; };
+  $('btn-load-folder').onclick = () => $('file-urdf-folder').click();
+  $('file-project').onchange = e => { if (e.target.files.length) loadAnyProject(e.target.files); e.target.value = ''; };
+  $('file-urdf-folder').onchange = e => { if (e.target.files.length) loadAnyProject(e.target.files); e.target.value = ''; };
   $('btn-validate').onclick = validateURDF;
   $('btn-export-urdf').onclick = () => { $('exp-text').value = generateURDF(); $('modal-exp').classList.remove('hidden'); };
   $('btn-export-zip').onclick = exportZip;
@@ -1883,16 +2248,16 @@ window.onload = () => {
   $('btn-link-import').onclick = () => { window._importTarget = S.sel.id; const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.stl,.obj,.step,.stp'; inp.multiple = true; inp.onchange = () => importFiles(inp.files, window._importTarget); inp.click(); };
 
   const recomputeMass = l => { if (l.props) l.mass = l.props.volume * l.density; };
-  $('l-preset').onchange = e => { const l = selLink(); if (!l || e.target.value === 'custom') return; l.density = +e.target.value; recomputeMass(l); syncInspector(); };
-  onNum('l-density', v => { const l = selLink(); if (!l) return; l.density = v; recomputeMass(l); setVal('l-mass', fp(l.mass)); setVal('l-preset', presetFor(v)); const I = linkInertia(l); ['xx', 'xy', 'xz', 'yy', 'yz', 'zz'].forEach(k => setVal('i-' + k, fp(I['i' + k]))); });
-  onNum('l-mass', v => { const l = selLink(); if (!l) return; l.mass = Math.max(0, v); if (l.props && l.props.volume > 0) { l.density = l.mass / l.props.volume; setVal('l-density', fp(l.density)); setVal('l-preset', presetFor(l.density)); } const I = linkInertia(l); ['xx', 'xy', 'xz', 'yy', 'yz', 'zz'].forEach(k => setVal('i-' + k, fp(I['i' + k]))); });
+  $('l-preset').onchange = e => { const l = selLink(); if (!l || e.target.value === 'custom') return; l.inertialOverride = null; l.inertiaOverride = null; l.density = +e.target.value; recomputeMass(l); syncInspector(); };
+  onNum('l-density', v => { const l = selLink(); if (!l) return; l.inertialOverride = null; l.inertiaOverride = null; l.density = v; recomputeMass(l); setVal('l-mass', fp(l.mass)); setVal('l-preset', presetFor(v)); const I = linkInertia(l); ['xx', 'xy', 'xz', 'yy', 'yz', 'zz'].forEach(k => setVal('i-' + k, fp(I['i' + k]))); });
+  onNum('l-mass', v => { const l = selLink(); if (!l) return; l.inertialOverride = null; l.inertiaOverride = null; l.mass = Math.max(0, v); if (l.props && l.props.volume > 0) { l.density = l.mass / l.props.volume; setVal('l-density', fp(l.density)); setVal('l-preset', presetFor(l.density)); } const I = linkInertia(l); ['xx', 'xy', 'xz', 'yy', 'yz', 'zz'].forEach(k => setVal('i-' + k, fp(I['i' + k]))); });
   const iKeys = ['xx', 'xy', 'xz', 'yy', 'yz', 'zz'];
   iKeys.forEach(k => onNum('i-' + k, () => {
-    const l = selLink(); if (!l) return; const o = {};
+    const l = selLink(); if (!l) return; l.inertialOverride = null; const o = {};
     iKeys.forEach(q => o['i' + q] = parseFloat($('i-' + q).value) || 0);
     l.inertiaOverride = o; $('inertia-state').textContent = 'manual override';
   }));
-  $('btn-recalc').onclick = () => { const l = selLink(); if (!l) return; computeProps(l); recomputeMass(l); l.inertiaOverride = null; syncInspector(); };
+  $('btn-recalc').onclick = () => { const l = selLink(); if (!l) return; l.inertialOverride = null; computeProps(l); recomputeMass(l); l.inertiaOverride = null; syncInspector(); };
   $('btn-del-link').onclick = () => {
     const l = selLink(); if (!l || l.id === S.root) return;
     const parent = jointOfChild(l.id).parent, kill = descendants(l.id);
