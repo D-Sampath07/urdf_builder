@@ -1,0 +1,2008 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-200">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>URDF Studio v4 — repaired</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/STLExporter.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script type="module">
+// Browser-side triangle simplifier. Keep it separate from the classic Three.js scripts above.
+window.MeshoptSimplifierReady = (async () => {
+  try {
+    const mod = await import('https://cdn.jsdelivr.net/npm/meshoptimizer@0.22.0/meshopt_simplifier.module.js');
+    await mod.MeshoptSimplifier.ready;
+    window.MeshoptSimplifier = mod.MeshoptSimplifier;
+    return mod.MeshoptSimplifier;
+  } catch (err) {
+    window.MeshoptSimplifierLoadError = err;
+    console.error('Mesh simplifier failed to load:', err);
+    throw err;
+  }
+})();
+window.MeshoptSimplifierReady.catch(() => {});
+</script>
+<style>
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+  canvas { display: block; }
+  .inp { background:#020617; border:1px solid #1e293b; border-radius:4px; padding:3px 6px; font-size:12px; font-family:ui-monospace,monospace; width:100%; color:#e2e8f0; }
+  .inp:focus { outline:none; border-color:#3b82f6; }
+  .sec { font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
+  .lbl { font-size:11px; color:#94a3b8; }
+  .btn { padding:4px 8px; font-size:11px; border-radius:4px; background:#1e293b; border:1px solid #334155; color:#e2e8f0; }
+  .btn:hover { background:#334155; }
+  .tbtn { padding:6px; border-radius:6px; color:#94a3b8; }
+  .tbtn:hover { background:#1e293b; color:#fff; }
+  .tbtn.on { background:#2563eb; color:#fff; }
+  .tab-active { border-bottom:2px solid #3b82f6; color:#60a5fa; font-weight:600; }
+  #btn-pick-toggle.on, #btn-pick-A.on, #btn-pick-B.on { background:#164e63; border-color:#0891b2; color:#cffafe; }
+  .side-panel { flex: 0 0 auto; min-width: 0; }
+  #left-panel { min-width: 200px; max-width: 520px; }
+  #right-panel { min-width: 280px; max-width: 600px; }
+  .resize-handle { flex: 0 0 7px; position: relative; z-index: 15; cursor: col-resize; touch-action: none; background: #0f172a; border-left: 1px solid #1e293b; border-right: 1px solid #1e293b; outline: none; }
+  .resize-handle::after { content: ""; position: absolute; left: 2px; top: 0; bottom: 0; width: 2px; background: #334155; }
+  .resize-handle:hover, .resize-handle:focus-visible { background: #1e3a8a; }
+  .resize-handle:hover::after, .resize-handle:focus-visible::after { background: #60a5fa; }
+  body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-select: none !important; }
+</style>
+</head>
+<body class="h-full flex flex-col font-sans overflow-hidden">
+
+<!-- HEADER -->
+<header class="h-14 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 shrink-0 z-20">
+  <div class="flex items-center gap-3">
+    <div class="bg-blue-600/20 text-blue-400 p-2 rounded-lg border border-blue-500/30"><i data-lucide="bot" class="w-5 h-5"></i></div>
+    <div>
+      <h1 class="font-bold text-sm text-white">URDF Studio <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">v4</span></h1>
+      <p class="text-[11px] text-slate-400">STL / OBJ / STEP &rarr; URDF &middot; ROS 1 &amp; ROS 2 package</p>
+    </div>
+  </div>
+  <div class="flex items-center gap-2">
+    <label class="lbl flex items-center gap-1">Units
+      <select id="unit-scale" class="inp !w-auto">
+        <option value="0.001" selected>mm</option><option value="0.01">cm</option><option value="1">m</option><option value="0.0254">inch</option>
+      </select>
+    </label>
+    <button id="btn-import" class="btn flex items-center gap-1.5"><i data-lucide="upload" class="w-4 h-4 text-blue-400"></i> Import STL/OBJ/STEP</button>
+    <button id="btn-optimize-open" class="btn flex items-center gap-1.5 !border-emerald-700 !text-emerald-300" title="Reduce triangle counts while keeping joint frames and link transforms unchanged"><i data-lucide="scissors" class="w-4 h-4"></i> Optimize Meshes</button>
+    <input type="file" id="file-mesh" accept=".stl,.obj,.step,.stp" multiple class="hidden">
+    <button id="btn-save" class="btn flex items-center gap-1.5"><i data-lucide="save" class="w-4 h-4 text-amber-400"></i> Save</button>
+    <button id="btn-load" class="btn flex items-center gap-1.5"><i data-lucide="folder-open" class="w-4 h-4 text-amber-400"></i> Load</button>
+    <input type="file" id="file-project" accept=".json" class="hidden">
+    <button id="btn-validate" class="btn flex items-center gap-1.5"><i data-lucide="shield-check" class="w-4 h-4 text-emerald-400"></i> Validate</button>
+    <button id="btn-export-urdf" class="btn flex items-center gap-1.5"><i data-lucide="file-code" class="w-4 h-4 text-purple-400"></i> URDF</button>
+    <button id="btn-export-zip" class="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium flex items-center gap-1.5"><i data-lucide="package-check" class="w-4 h-4"></i> ROS Package (.zip)</button>
+  </div>
+</header>
+
+<div class="flex-1 flex overflow-hidden">
+  <!-- LEFT -->
+  <aside id="left-panel" class="side-panel border-r border-slate-800 bg-slate-900/90 flex flex-col shrink-0" style="width:288px; flex-basis:288px;">
+    <div class="flex border-b border-slate-800 text-xs text-slate-400 bg-slate-950/50">
+      <button id="tab-btn-tree" class="flex-1 py-2.5 tab-active">Hierarchy</button>
+      <button id="tab-btn-settings" class="flex-1 py-2.5 hover:text-slate-200">Package</button>
+    </div>
+    <div id="tab-tree" class="flex-1 flex flex-col overflow-hidden">
+      <div class="p-2 border-b border-slate-800 flex justify-between items-center">
+        <span class="sec text-slate-300">Kinematic tree</span>
+        <button id="btn-add-link" class="btn !text-blue-300">+ Empty child link</button>
+      </div>
+      <div id="tree-container" class="flex-1 overflow-y-auto p-2 space-y-0.5"></div>
+      <div class="p-3 border-t border-slate-800 bg-slate-950/60">
+        <div class="flex justify-between items-center mb-2">
+          <span class="sec text-slate-400">Pose preview</span>
+          <button id="btn-reset-pose" class="text-[10px] text-slate-400 hover:text-white underline">reset</button>
+        </div>
+        <div id="sliders" class="space-y-2 max-h-40 overflow-y-auto pr-1"></div>
+      </div>
+    </div>
+    <div id="tab-settings" class="flex-1 overflow-y-auto p-4 space-y-4 hidden">
+      <div class="space-y-1"><label class="lbl">Robot name</label><input id="set-robot" class="inp" value="my_robot"></div>
+      <div class="space-y-1"><label class="lbl">ROS package name</label><input id="set-pkg" class="inp" value="my_robot_description"></div>
+      <div class="space-y-1"><label class="lbl">Target ROS version</label>
+        <select id="set-ros" class="inp"><option value="2">ROS 2 (ament_cmake, launch.py)</option><option value="1">ROS 1 (catkin, launch xml)</option></select></div>
+      <label class="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" id="step-split" checked> Split STEP assemblies into one link per body</label>
+      <p class="text-[11px] text-slate-500 leading-relaxed">Imported parts keep their CAD coordinates, so an assembly appears already assembled. Then place each joint with the gizmo &mdash; with <b>Keep geometry in place</b> on, moving a joint frame never moves the mesh.</p>
+    </div>
+  </aside>
+  <div id="left-resize" class="resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize hierarchy panel" aria-valuemin="200" aria-valuemax="520" tabindex="0" title="Drag to resize the hierarchy panel; use left/right arrow keys"></div>
+
+  <!-- CENTER -->
+  <main class="flex-1 min-w-0 relative bg-slate-950">
+    <div class="absolute top-3 left-3 z-10 flex items-center gap-1 bg-slate-900/90 backdrop-blur border border-slate-800 p-1.5 rounded-lg">
+      <button id="tool-select" class="tbtn on" title="Select (Q)"><i data-lucide="mouse-pointer" class="w-4 h-4"></i></button>
+      <button id="tool-translate" class="tbtn" title="Move (W)"><i data-lucide="move" class="w-4 h-4"></i></button>
+      <button id="tool-rotate" class="tbtn" title="Rotate (E)"><i data-lucide="rotate-cw" class="w-4 h-4"></i></button>
+      <div class="w-px h-5 bg-slate-800 mx-1"></div>
+      <button id="target-joint" class="tbtn on !text-xs" title="Gizmo edits the joint frame">Joint frame</button>
+      <button id="target-visual" class="tbtn !text-xs" title="Gizmo edits the mesh offset">Mesh offset</button>
+      <button id="btn-keep" class="tbtn on !text-xs" title="Moving a joint frame keeps meshes (and child joints) where they are">Keep geometry in place</button>
+      <div class="w-px h-5 bg-slate-800 mx-1"></div>
+      <button id="btn-grid" class="tbtn on" title="Grid"><i data-lucide="grid" class="w-4 h-4"></i></button>
+      <button id="btn-frames" class="tbtn on" title="Link frames"><i data-lucide="axis-3d" class="w-4 h-4"></i></button>
+      <button id="btn-collision" class="tbtn" title="Collision shapes"><i data-lucide="box" class="w-4 h-4"></i></button>
+      <button id="btn-fit" class="tbtn" title="Fit view"><i data-lucide="maximize" class="w-4 h-4"></i></button>
+    </div>
+    <div class="absolute top-3 right-3 z-10 bg-slate-900/80 border border-slate-800 px-3 py-1.5 rounded-md text-[11px] text-slate-400 flex gap-3">
+      <span>Links <b id="link-count" class="text-slate-200">1</b></span><span>Joints <b id="joint-count" class="text-slate-200">0</b></span><span>Z-up, meters (ROS)</span>
+    </div>
+    <div id="hint" class="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
+      <div class="text-center text-slate-500 text-sm"><i data-lucide="upload-cloud" class="w-10 h-10 mx-auto mb-2 opacity-60"></i>Drop STL / OBJ / STEP files here<br><span class="text-xs">or use Import in the header</span></div>
+    </div>
+    <div id="canvas-container" class="w-full h-full relative z-[1]"></div>
+  </main>
+  <div id="right-resize" class="resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize properties panel" aria-valuemin="280" aria-valuemax="600" tabindex="0" title="Drag to resize the properties panel; use left/right arrow keys"></div>
+
+  <!-- RIGHT -->
+  <aside id="right-panel" class="side-panel border-l border-slate-800 bg-slate-900/90 flex flex-col shrink-0 overflow-hidden" style="width:384px; flex-basis:384px;">
+    <div class="p-3 border-b border-slate-800 flex justify-between items-center bg-slate-950/50">
+      <span class="sec text-slate-200">Properties</span>
+      <span id="sel-badge" class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700">None</span>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4 space-y-5">
+      <div id="inspector-empty" class="text-center py-12 text-slate-500 text-xs">Select a link or joint in the tree, or click a part in the viewport.</div>
+
+      <!-- LINK -->
+      <div id="link-inspector" class="space-y-4 hidden">
+        <div><div class="sec text-blue-400 mb-1">Link</div>
+          <div class="grid grid-cols-3 gap-2 items-center"><span class="lbl">Name</span><input id="l-name" class="inp col-span-2"></div>
+          <div class="flex gap-2 mt-2">
+            <button id="btn-edit-incoming" class="btn flex-1">Edit incoming joint &rarr;</button>
+            <button id="btn-link-import" class="btn flex-1">Import mesh here</button>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-800 space-y-2">
+          <div class="sec text-blue-400">Visual mesh</div>
+          <div id="l-info" class="text-[11px] text-slate-400 font-mono leading-relaxed"></div>
+          <span class="lbl">Mesh offset in link frame &mdash; xyz (m)</span>
+          <div class="triple" data-ids="v-x,v-y,v-z" data-step="0.001"></div>
+          <span class="lbl">Mesh rotation &mdash; rpy (deg)</span>
+          <div class="triple" data-ids="v-r,v-p,v-w" data-ph="R,P,Y" data-step="1"></div>
+          <span class="lbl">Re-centre mesh data (mesh stays in place)</span>
+          <div class="grid grid-cols-3 gap-1.5">
+            <button class="btn" id="btn-c-center">Bounds centre</button><button class="btn" id="btn-c-bottom">Bottom centre</button><button class="btn" id="btn-c-com">Centre of mass</button>
+          </div>
+          <div class="flex items-center justify-between pt-1">
+            <span class="lbl">Colour / alpha</span>
+            <div class="flex items-center gap-2"><input type="color" id="l-color" class="w-7 h-7 bg-transparent cursor-pointer border-0"><input type="number" id="l-alpha" min="0" max="1" step="0.05" class="inp !w-16"></div>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-800 space-y-2">
+          <div class="sec text-blue-400">Collision</div>
+          <select id="l-collision" class="inp">
+            <option value="visual">Same as visual mesh</option><option value="box">Bounding box</option>
+            <option value="cylinder">Bounding cylinder (Z axis)</option><option value="sphere">Bounding sphere</option><option value="none">None</option>
+          </select>
+        </div>
+
+        <div class="pt-3 border-t border-slate-800 space-y-2">
+          <div class="flex justify-between"><div class="sec text-blue-400">Mass &amp; inertia</div>
+            <button id="btn-recalc" class="text-[10px] text-blue-400 underline">recompute from mesh</button></div>
+          <div class="grid grid-cols-3 gap-2">
+            <div><div class="lbl">Preset</div><select id="l-preset" class="inp">
+              <option value="2700">Aluminium</option><option value="7850">Steel</option><option value="1040">ABS / PLA</option><option value="1550">Carbon fibre</option><option value="custom">Custom</option></select></div>
+            <div><div class="lbl">Density kg/m&sup3;</div><input type="number" id="l-density" step="any" class="inp"></div>
+            <div><div class="lbl">Mass kg</div><input type="number" id="l-mass" step="any" class="inp"></div>
+          </div>
+          <div class="bg-slate-950 p-2 rounded border border-slate-800 space-y-1.5">
+            <div class="flex justify-between"><span class="lbl">Inertia about COM (kg&middot;m&sup2;)</span><span id="inertia-state" class="text-[10px] text-slate-500"></span></div>
+            <div class="triple" data-ids="i-xx,i-xy,i-xz" data-ph="Ixx,Ixy,Ixz" data-step="any"></div>
+            <div class="triple" data-ids="i-yy,i-yz,i-zz" data-ph="Iyy,Iyz,Izz" data-step="any"></div>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-800 flex justify-end">
+          <button id="btn-del-link" class="btn !bg-rose-600/20 !text-rose-300 !border-rose-500/30">Delete link + children</button>
+        </div>
+      </div>
+
+      <!-- JOINT -->
+      <div id="joint-inspector" class="space-y-4 hidden">
+        <div><div class="sec text-purple-400 mb-1">Joint</div>
+          <div class="grid grid-cols-3 gap-2 items-center"><span class="lbl">Name</span><input id="j-name" class="inp col-span-2"></div>
+          <div class="grid grid-cols-3 gap-2 items-center mt-2"><span class="lbl">Type</span>
+            <select id="j-type" class="inp col-span-2"><option value="fixed">Fixed</option><option value="revolute">Revolute (limited)</option><option value="continuous">Continuous</option><option value="prismatic">Prismatic</option></select></div>
+          <div class="grid grid-cols-3 gap-2 items-center mt-2"><span class="lbl">Parent</span><select id="j-parent" class="inp col-span-2"></select></div>
+          <div class="grid grid-cols-3 gap-2 items-center mt-2"><span class="lbl">Child</span><input id="j-child" disabled class="inp col-span-2 opacity-60"></div>
+        </div>
+        <div class="pt-3 border-t border-slate-800 space-y-2">
+          <div class="sec text-purple-400">Origin (in parent frame)</div>
+          <span class="lbl">xyz (m)</span><div class="triple" data-ids="o-x,o-y,o-z" data-step="0.001"></div>
+          <span class="lbl">rpy (deg)</span><div class="triple" data-ids="o-r,o-p,o-w" data-ph="R,P,Y" data-step="1"></div>
+          <span class="lbl">Place joint frame at the child mesh (mesh stays in place)</span>
+          <div class="grid grid-cols-2 gap-1.5"><button class="btn" id="btn-j-center">Mesh bounds centre</button><button class="btn" id="btn-j-com">Mesh centre of mass</button></div>
+        </div>
+        <div id="point-pick-panel" class="pt-3 border-t border-slate-800 space-y-2">
+          <div class="sec text-cyan-300">Point-based joint placement · experimental</div>
+          <p class="text-[11px] text-slate-400 leading-relaxed">Pick points directly on the selected joint's child mesh. Set A and B represent the two wheels/features. Their centres define the joint axis.</p>
+          <div class="grid grid-cols-2 gap-1.5">
+            <button id="btn-pick-toggle" class="btn !border-cyan-500/40">Start point picking</button>
+            <button id="btn-pick-undo" class="btn">Undo last point</button>
+          </div>
+          <div class="grid grid-cols-2 gap-1.5">
+            <button id="btn-pick-A" class="btn !border-cyan-500/40">Set A · 0 points</button>
+            <button id="btn-pick-B" class="btn !border-orange-500/40">Set B · 0 points</button>
+          </div>
+          <div class="flex items-center justify-between gap-2">
+            <span id="pick-status" class="text-[10px] text-slate-400">Picking is off.</span>
+            <div class="flex gap-1.5"><button id="btn-pick-clear-A" class="btn">Clear A</button><button id="btn-pick-clear-B" class="btn">Clear B</button></div>
+          </div>
+          <label class="lbl block">Centre calculation</label>
+          <select id="pick-method" class="inp">
+            <option value="centroid">Average selected points (triangle / general feature)</option>
+            <option value="circle">Fit circular face (wheel / round feature)</option>
+          </select>
+          <div class="grid grid-cols-2 gap-1.5">
+            <button id="btn-pick-position" class="btn !border-cyan-500/40">Place at A centre</button>
+            <button id="btn-pick-axis" class="btn !bg-purple-600/20 !border-purple-500/40 !text-purple-200">Derive axis A → B</button>
+          </div>
+          <p class="text-[10px] text-slate-500 leading-relaxed">For circle fit, pick 4–8 points on the same flat circular face for each wheel. For triangle-like features, choose balanced points around each feature and use Average. Derive axis sets the joint origin at the midpoint and aligns joint Z with A → B. You can still edit the origin or gizmo manually.</p>
+        </div>
+        <div id="j-axis-panel" class="pt-3 border-t border-slate-800 space-y-2">
+          <div class="sec text-purple-400">Axis (in joint frame)</div>
+          <div class="triple" data-ids="a-x,a-y,a-z" data-step="0.1"></div>
+          <div class="grid grid-cols-3 gap-1.5"><button class="btn" data-axis="1,0,0">X</button><button class="btn" data-axis="0,1,0">Y</button><button class="btn" data-axis="0,0,1">Z</button></div>
+        </div>
+        <div id="j-limit-panel" class="pt-3 border-t border-slate-800 space-y-2">
+          <div class="sec text-purple-400">Limits</div>
+          <div class="grid grid-cols-2 gap-2">
+            <div id="lim-lo-wrap"><div class="lbl" id="lim-lo-lbl">Lower</div><input type="number" step="any" id="lim-lo" class="inp"></div>
+            <div id="lim-hi-wrap"><div class="lbl" id="lim-hi-lbl">Upper</div><input type="number" step="any" id="lim-hi" class="inp"></div>
+            <div><div class="lbl">Max velocity</div><input type="number" step="any" id="lim-vel" class="inp"></div>
+            <div><div class="lbl">Max effort</div><input type="number" step="any" id="lim-eff" class="inp"></div>
+          </div>
+        </div>
+        <div id="j-mimic-panel" class="pt-3 border-t border-slate-800 space-y-2">
+          <div class="sec text-purple-400">Mimic / coupled joint</div>
+          <label class="flex items-center gap-2 text-xs text-slate-200">
+            <input type="checkbox" id="j-mimic-enabled">
+            Drive this joint from another joint
+          </label>
+          <div id="j-mimic-fields" class="space-y-2 hidden">
+            <div><label class="lbl" for="j-mimic-source">Follow joint</label><select id="j-mimic-source" class="inp"></select></div>
+            <div class="grid grid-cols-2 gap-2">
+              <div><label class="lbl" for="j-mimic-multiplier">Multiplier</label><input type="number" step="any" id="j-mimic-multiplier" value="1" class="inp"></div>
+              <div><label class="lbl" id="j-mimic-offset-label" for="j-mimic-offset">Offset</label><input type="number" step="any" id="j-mimic-offset" value="0" class="inp"></div>
+            </div>
+            <p id="j-mimic-summary" class="text-[10px] text-slate-400 leading-relaxed">q_follower = multiplier × q_source + offset. The follower slider is disabled and updates automatically.</p>
+          </div>
+          <p class="text-[10px] text-slate-500 leading-relaxed">For parallel grippers, make the two finger joints prismatic, point their axes in opposite directions, and set one finger joint to mimic the other with multiplier 1 and offset 0.</p>
+        </div>
+        <div class="pt-3 border-t border-slate-800 flex justify-end">
+          <button id="btn-del-joint" class="btn !bg-rose-600/20 !text-rose-300 !border-rose-500/30">Delete joint + child subtree</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- MODALS -->
+<div id="modal-val" class="fixed inset-0 z-50 bg-slate-950/80 flex items-center justify-center hidden">
+  <div class="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-xl overflow-hidden">
+    <div class="p-4 border-b border-slate-800 flex justify-between"><h3 class="font-bold text-sm">URDF diagnostics</h3><button data-close="modal-val" class="text-slate-400 hover:text-white">&#10005;</button></div>
+    <div id="val-content" class="p-4 max-h-96 overflow-y-auto space-y-2 text-xs"></div>
+  </div>
+</div>
+<div id="modal-exp" class="fixed inset-0 z-50 bg-slate-950/80 flex items-center justify-center hidden">
+  <div class="bg-slate-900 border border-slate-800 rounded-xl w-[760px] h-[560px] flex flex-col overflow-hidden">
+    <div class="p-4 border-b border-slate-800 flex justify-between"><h3 class="font-bold text-sm">Generated URDF</h3><button data-close="modal-exp" class="text-slate-400 hover:text-white">&#10005;</button></div>
+    <textarea id="exp-text" readonly class="flex-1 bg-slate-950 p-3 text-xs font-mono text-slate-200 resize-none focus:outline-none"></textarea>
+    <div class="p-3 border-t border-slate-800 flex justify-between items-center">
+      <span class="text-[11px] text-slate-500">Mesh paths are package://&lt;pkg&gt;/meshes/ &mdash; use the ZIP export to get the STLs too.</span>
+      <div class="flex gap-2"><button id="btn-copy" class="btn">Copy</button><button id="btn-dl" class="btn !bg-blue-600 !border-blue-500">Save .urdf</button></div>
+    </div>
+  </div>
+</div>
+<div id="modal-optimize" class="fixed inset-0 z-50 bg-slate-950/85 flex items-center justify-center hidden p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+    <div class="p-4 border-b border-slate-800 flex justify-between items-center gap-4">
+      <div><h3 class="font-bold text-sm text-white">Optimize Meshes</h3><p class="text-[11px] text-slate-400 mt-1">Reduce triangles only. Mesh vertices stay in link-local coordinates; joint origins, axes, visual offsets, and link settings are not edited.</p></div>
+      <button data-close="modal-optimize" class="text-slate-400 hover:text-white" aria-label="Close">&#10005;</button>
+    </div>
+    <div class="p-4 space-y-4 overflow-y-auto">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div class="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2">
+          <div class="flex justify-between items-center"><label for="opt-reduction" class="text-xs font-semibold text-slate-200">Target triangle reduction</label><span id="opt-reduction-label" class="text-sm font-mono text-emerald-300">50%</span></div>
+          <input id="opt-reduction" type="range" min="10" max="90" step="10" value="50" class="w-full accent-emerald-500">
+          <div class="flex justify-between text-[10px] text-slate-500"><span>10% · safer</span><span>90% · aggressive</span></div>
+        </div>
+        <div class="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2">
+          <label for="opt-error" class="text-xs font-semibold text-slate-200">Shape error tolerance</label>
+          <select id="opt-error" class="inp"><option value="0.01">Strict — 1%</option><option value="0.02" selected>Balanced — 2%</option><option value="0.05">Aggressive — 5%</option></select>
+          <p class="text-[10px] text-slate-500 leading-relaxed">A strict tolerance may stop above the target reduction to preserve more shape detail.</p>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-2 items-center">
+        <button id="btn-optimize-run" class="btn !bg-emerald-700 !border-emerald-600 !text-white !px-4">Optimize all meshes</button>
+        <button id="btn-optimize-restore" class="btn !border-amber-700 !text-amber-300" disabled>Restore original meshes</button>
+        <span id="opt-status" class="text-[11px] text-slate-400">The original geometry is kept for restore and included in saved project JSON after optimization.</span>
+      </div>
+      <div id="opt-results" class="hidden rounded-lg border border-slate-800 bg-slate-950 p-3 text-xs text-slate-200"></div>
+      <div class="border border-slate-800 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 bg-slate-950 border-b border-slate-800 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Mesh summary</div>
+        <div id="opt-table" class="max-h-64 overflow-auto text-xs"><p class="p-3 text-slate-500">No imported meshes yet.</p></div>
+      </div>
+      <p class="text-[10px] text-slate-500 leading-relaxed">Optimization is lossy: inspect the robot after reducing, especially narrow gaps, teeth, gripper fingers, and thin walls. The simplifier reuses existing vertices and removes triangles; it does not move joint frames or alter mesh origins. Your previous JSON file remains unchanged.</p>
+    </div>
+  </div>
+</div>
+<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-lg text-xs shadow-xl hidden max-w-xl"></div>
+
+<script>
+/* ============================================================
+   URDF STUDIO v4
+   Conventions: Z-up, meters, radians in state only for joint limits/values;
+   all rpy fields are stored in DEGREES and converted on export.
+   URDF rpy uses Rz(yaw) · Ry(pitch) · Rx(roll), represented by Three.js Euler order 'ZYX'.
+   ============================================================ */
+THREE.Object3D.DefaultUp.set(0, 0, 1);
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+const $ = id => document.getElementById(id);
+
+const S = {
+  robotName: 'my_robot', pkg: 'my_robot_description', ros: '2',
+  keep: true, showFrames: true, showCollision: false,
+  gizmoMode: 'select', editTarget: 'joint',
+  links: {}, joints: {}, root: null, sel: null, uid: 0
+};
+// Temporary viewport picks are deliberately not part of the saved project JSON.
+let pointPick = { enabled: false, group: 'A', jointId: null, A: [], B: [], markers: { A: [], B: [] } };
+
+/* ---------- helpers ---------- */
+const nid = p => `${p}${++S.uid}`;
+const fp = v => +Number(v).toPrecision(7);
+const sanitize = n => ((n || 'link').trim().replace(/[^A-Za-z0-9_]/g, '_')) || 'link';
+const sanitizePackage = n => {
+  let name = String(n || 'my_robot_description').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  if (!name) name = 'my_robot_description';
+  if (!/^[a-z]/.test(name)) name = `pkg_${name}`;
+  return name;
+};
+function uniqueName(base, kind, excludeId) {
+  base = sanitize(base);
+  const used = new Set(Object.values(kind === 'link' ? S.links : S.joints).filter(x => x.id !== excludeId).map(x => x.name.toLowerCase()));
+  let n = base, i = 2; while (used.has(n.toLowerCase())) n = `${base}_${i++}`; return n;
+}
+let toastTimer;
+function toast(msg, type = 'info') {
+  const t = $('toast'); t.textContent = msg;
+  t.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-lg text-xs shadow-xl max-w-xl ${type === 'error' ? 'bg-rose-600 text-white' : type === 'warn' ? 'bg-amber-500 text-slate-900' : 'bg-slate-700 text-white'}`;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), type === 'error' ? 7000 : 4000);
+}
+const eulerOf = rpy => new THREE.Euler(rpy[0] * D2R, rpy[1] * D2R, rpy[2] * D2R, 'ZYX');
+function poseMatrix(xyz, rpy) {
+  return new THREE.Matrix4().compose(new THREE.Vector3(...xyz), new THREE.Quaternion().setFromEuler(eulerOf(rpy)), new THREE.Vector3(1, 1, 1));
+}
+function matToPose(m) {
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+  m.decompose(p, q, s);
+  const e = new THREE.Euler().setFromQuaternion(q, 'ZYX');
+  return { xyz: [p.x, p.y, p.z], rpy: [e.x * R2D, e.y * R2D, e.z * R2D] };
+}
+// Convert a legacy project RPY triplet from the previous preview's XYZ interpretation
+// into an equivalent URDF-compatible ZYX triplet without changing its physical rotation.
+function convertLegacyRPYToURDF(rpy) {
+  if (!Array.isArray(rpy) || rpy.length !== 3 || !rpy.every(Number.isFinite)) return rpy;
+  const q = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(rpy[0] * D2R, rpy[1] * D2R, rpy[2] * D2R, 'XYZ')
+  );
+  const e = new THREE.Euler().setFromQuaternion(q, 'ZYX');
+  return [e.x * R2D, e.y * R2D, e.z * R2D];
+}
+const selLink = () => (S.sel && S.sel.type === 'link') ? S.links[S.sel.id] : null;
+const selJoint = () => (S.sel && S.sel.type === 'joint') ? S.joints[S.sel.id] : null;
+const jointOfChild = id => Object.values(S.joints).find(j => j.child === id);
+const childrenJoints = id => Object.values(S.joints).filter(j => j.parent === id);
+function descendants(id) {
+  const out = new Set([id]);
+  (function walk(i) { childrenJoints(i).forEach(j => { out.add(j.child); walk(j.child); }); })(id);
+  return out;
+}
+
+/* ---------- model ---------- */
+function makeLink(name) {
+  const id = nid('L');
+  const l = { id, name: uniqueName(name, 'link'), geometry: null, originalGeometry: null, props: null,
+    visual: { xyz: [0, 0, 0], rpy: [0, 0, 0] }, color: '#94a3b8', alpha: 1,
+    collision: 'visual', density: 2700, mass: 0, inertiaOverride: null };
+  S.links[id] = l; return l;
+}
+function addJoint(parent, child, type = 'fixed') {
+  const id = nid('J');
+  const j = { id, name: uniqueName(`${S.links[parent].name}_to_${S.links[child].name}`, 'joint'), type, parent, child,
+    origin: { xyz: [0, 0, 0], rpy: [0, 0, 0] }, axis: [0, 0, 1],
+    limits: { lower: -Math.PI / 2, upper: Math.PI / 2, velocity: 1, effort: 10 }, value: 0, mimic: null };
+  S.joints[id] = j; return j;
+}
+function mimicWouldCycle(followerId, sourceId) {
+  if (!sourceId || sourceId === followerId) return true;
+  const seen = new Set();
+  let current = S.joints[sourceId];
+  while (current) {
+    if (current.id === followerId) return true;
+    if (seen.has(current.id)) return true;
+    seen.add(current.id);
+    const nextId = current.mimic && current.mimic.jointId;
+    if (!nextId || !S.joints[nextId]) return false;
+    current = S.joints[nextId];
+  }
+  return false;
+}
+function clearBrokenMimicReferences() {
+  Object.values(S.joints).forEach(j => {
+    if (j.mimic && (!j.mimic.jointId || !S.joints[j.mimic.jointId])) j.mimic = null;
+  });
+}
+function applyMimicValues() {
+  const values = new Map();
+  const visiting = new Set();
+  const resolve = id => {
+    if (values.has(id)) return values.get(id);
+    const j = S.joints[id];
+    if (!j) return 0;
+    const raw = Number.isFinite(Number(j.value)) ? Number(j.value) : 0;
+    // Malformed/cyclic projects are handled without recursing forever; Validate reports them.
+    if (visiting.has(id)) return raw;
+    visiting.add(id);
+    let value = raw;
+    if (j.mimic && j.mimic.jointId && S.joints[j.mimic.jointId] && j.mimic.jointId !== id) {
+      const sourceValue = resolve(j.mimic.jointId);
+      const multiplier = Number.isFinite(Number(j.mimic.multiplier)) ? Number(j.mimic.multiplier) : 1;
+      const offset = Number.isFinite(Number(j.mimic.offset)) ? Number(j.mimic.offset) : 0;
+      value = multiplier * sourceValue + offset;
+    }
+    visiting.delete(id);
+    values.set(id, value);
+    return value;
+  };
+  Object.values(S.joints).forEach(j => { j.value = resolve(j.id); });
+}
+function linkWorldZero(id) {           // link frame in world at zero pose
+  if (id === S.root) return new THREE.Matrix4();
+  const j = jointOfChild(id);
+  return linkWorldZero(j.parent).multiply(poseMatrix(j.origin.xyz, j.origin.rpy));
+}
+/* Change a joint origin. If keep: the child's mesh and the child's own joints stay put in the world. */
+function setJointOrigin(j, xyz, rpy, keep) {
+  const old = linkWorldZero(j.child);
+  j.origin = { xyz: [...xyz], rpy: [...rpy] };
+  if (!keep) return;
+  const D = linkWorldZero(j.child).invert().multiply(old);
+  const l = S.links[j.child];
+  l.visual = matToPose(D.clone().multiply(poseMatrix(l.visual.xyz, l.visual.rpy)));
+  childrenJoints(j.child).forEach(cj => { cj.origin = matToPose(D.clone().multiply(poseMatrix(cj.origin.xyz, cj.origin.rpy))); });
+}
+function reparent(j, newParent) {       // keeps world placement
+  const old = linkWorldZero(j.child);
+  j.parent = newParent;
+  j.origin = matToPose(linkWorldZero(newParent).invert().multiply(old));
+}
+function visualPoint(link, p) { return new THREE.Vector3(...p).applyMatrix4(poseMatrix(link.visual.xyz, link.visual.rpy)); }
+
+/* ---------- exact mass properties of a closed triangle mesh (uniform density) ---------- */
+function computeProps(link) {
+  const g = link.geometry;
+  if (!g) { link.props = null; return; }
+  const pos = g.attributes.position.array, idx = g.index ? g.index.array : null;
+  const n = idx ? idx.length : pos.length / 3;
+  let V = 0, mx = 0, my = 0, mz = 0, Cxx = 0, Cyy = 0, Czz = 0, Cxy = 0, Cxz = 0, Cyz = 0;
+  for (let i = 0; i < n; i += 3) {
+    const ia = idx ? idx[i] : i, ib = idx ? idx[i + 1] : i + 1, ic = idx ? idx[i + 2] : i + 2;
+    const ax = pos[3 * ia], ay = pos[3 * ia + 1], az = pos[3 * ia + 2];
+    const bx = pos[3 * ib], by = pos[3 * ib + 1], bz = pos[3 * ib + 2];
+    const cx = pos[3 * ic], cy = pos[3 * ic + 1], cz = pos[3 * ic + 2];
+    const v = (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6;
+    const sx = ax + bx + cx, sy = ay + by + cy, sz = az + bz + cz;
+    V += v; mx += v * sx / 4; my += v * sy / 4; mz += v * sz / 4;
+    const k = v / 20;
+    Cxx += k * (ax * ax + bx * bx + cx * cx + sx * sx);
+    Cyy += k * (ay * ay + by * by + cy * cy + sy * sy);
+    Czz += k * (az * az + bz * bz + cz * cz + sz * sz);
+    Cxy += k * (ax * ay + bx * by + cx * cy + sx * sy);
+    Cxz += k * (ax * az + bx * bz + cx * cz + sx * sz);
+    Cyz += k * (ay * az + by * bz + cy * cz + sy * sz);
+  }
+  g.computeBoundingBox();
+  const bb = g.boundingBox, size = [bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z];
+  const center = [(bb.max.x + bb.min.x) / 2, (bb.max.y + bb.min.y) / 2, (bb.max.z + bb.min.z) / 2];
+  const bbox = { min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] };
+  const bV = size[0] * size[1] * size[2];
+  let props;
+  if (Math.abs(V) > 1e-3 * bV && Math.abs(V) > 1e-15) {
+    if (V < 0) { V = -V; mx = -mx; my = -my; mz = -mz; Cxx = -Cxx; Cyy = -Cyy; Czz = -Czz; Cxy = -Cxy; Cxz = -Cxz; Cyz = -Cyz; }
+    const com = [mx / V, my / V, mz / V];
+    const xx = Cxx - V * com[0] * com[0], yy = Cyy - V * com[1] * com[1], zz = Czz - V * com[2] * com[2];
+    const xy = Cxy - V * com[0] * com[1], xz = Cxz - V * com[0] * com[2], yz = Cyz - V * com[1] * com[2];
+    props = { volume: V, com, valid: true,
+      u: { ixx: (yy + zz) / V, iyy: (xx + zz) / V, izz: (xx + yy) / V, ixy: -xy / V, ixz: -xz / V, iyz: -yz / V } };
+  } else {   // not watertight -> bbox estimate
+    const [dx, dy, dz] = size;
+    props = { volume: bV, com: center, valid: false,
+      u: { ixx: (dy * dy + dz * dz) / 12, iyy: (dx * dx + dz * dz) / 12, izz: (dx * dx + dy * dy) / 12, ixy: 0, ixz: 0, iyz: 0 } };
+  }
+  Object.assign(props, { size, center, bbox });
+  link.props = props;
+}
+function linkInertia(l) {
+  if (l.inertiaOverride) return l.inertiaOverride;
+  if (!l.props) return { ixx: 0, ixy: 0, ixz: 0, iyy: 0, iyz: 0, izz: 0 };
+  const u = l.props.u, m = l.mass;
+  return { ixx: u.ixx * m, ixy: u.ixy * m, ixz: u.ixz * m, iyy: u.iyy * m, iyz: u.iyz * m, izz: u.izz * m };
+}
+function collisionSpec(l) {
+  if (!l.props || l.collision === 'none' || l.collision === 'visual') return null;
+  const s = l.props.size, o = visualPoint(l, l.props.center);
+  const pose = { xyz: [o.x, o.y, o.z], rpy: l.visual.rpy };
+  if (l.collision === 'box') return { type: 'box', size: s, pose };
+  if (l.collision === 'cylinder') return { type: 'cylinder', radius: Math.max(s[0], s[1]) / 2, length: s[2], pose };
+  return { type: 'sphere', radius: Math.hypot(s[0], s[1], s[2]) / 2, pose };
+}
+
+/* ============================================================
+   THREE.JS VIEWPORT
+   ============================================================ */
+let scene, camera, renderer, orbit, gizmo, gridHelper, robotRoot, pointMarkerRoot;
+const linkObj = new Map(), visualMap = new Map(), frameMap = new Map(), motionMap = new Map(), arrowMap = new Map(), colMap = new Map();
+
+function initThree() {
+  const c = $('canvas-container');
+  scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a0f1d);
+  camera = new THREE.PerspectiveCamera(50, c.clientWidth / c.clientHeight, 0.001, 200);
+  camera.position.set(0.7, -0.9, 0.6);
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(c.clientWidth, c.clientHeight);
+  c.appendChild(renderer.domElement);
+  orbit = new THREE.OrbitControls(camera, renderer.domElement);
+  orbit.enableDamping = true; orbit.dampingFactor = 0.08;
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const d1 = new THREE.DirectionalLight(0xffffff, 0.8); d1.position.set(3, -5, 8); scene.add(d1);
+  const d2 = new THREE.DirectionalLight(0x6c8cff, 0.35); d2.position.set(-4, 4, -2); scene.add(d2);
+  gridHelper = new THREE.GridHelper(4, 40, 0x3b82f6, 0x1e293b); gridHelper.rotation.x = Math.PI / 2; scene.add(gridHelper);
+  scene.add(new THREE.AxesHelper(0.25));
+  robotRoot = new THREE.Group(); scene.add(robotRoot);
+  pointMarkerRoot = new THREE.Group(); scene.add(pointMarkerRoot);
+
+  gizmo = new THREE.TransformControls(camera, renderer.domElement);
+  gizmo.size = 0.8; scene.add(gizmo);
+  gizmo.addEventListener('dragging-changed', e => { orbit.enabled = !e.value; });
+  gizmo.addEventListener('objectChange', () => {
+    const o = gizmo.object; if (!o) return;
+    const e = new THREE.Euler().setFromQuaternion(o.quaternion, 'ZYX');
+    const xyz = [o.position.x, o.position.y, o.position.z], rpy = [e.x * R2D, e.y * R2D, e.z * R2D];
+    if (o.userData.kind === 'joint') { setJointOrigin(S.joints[o.userData.id], xyz, rpy, S.keep); }
+    else if (o.userData.kind === 'visual') { S.links[o.userData.id].visual = { xyz, rpy }; }
+    applyPose(); syncInspector();
+  });
+
+  new ResizeObserver(() => {
+    camera.aspect = c.clientWidth / c.clientHeight; camera.updateProjectionMatrix();
+    renderer.setSize(c.clientWidth, c.clientHeight);
+  }).observe(c);
+
+  // click-to-select
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(); let down = null;
+  renderer.domElement.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
+  renderer.domElement.addEventListener('pointerup', e => {
+    if (!down) return;
+    const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
+    if (moved > 4 || gizmo.dragging || gizmo.axis) return;
+    const r = renderer.domElement.getBoundingClientRect();
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    robotRoot.updateMatrixWorld(true);
+    const hits = ray.intersectObjects([...visualMap.values()], false);
+    if (pointPick.enabled) {
+      const j = selJoint();
+      if (!j) { toast('Select a joint before picking points.', 'warn'); stopPointPicking(); return; }
+      if (!hits.length) { toast('Click directly on the joint child mesh to add a point.', 'warn'); return; }
+      const hit = hits[0];
+      if (hit.object.userData.id !== j.child) {
+        toast(`Pick points on the child mesh: ${S.links[j.child].name}.`, 'warn');
+        return;
+      }
+      addJointPickPoint(pointPick.group, hit.point);
+      return;
+    }
+    if (hits.length) selectEntity(hits[0].object.userData.id, 'link');
+  });
+
+  // drag & drop
+  const dz = $('canvas-container');
+  dz.addEventListener('dragover', e => e.preventDefault());
+  dz.addEventListener('drop', e => { e.preventDefault(); importFiles(e.dataTransfer.files); });
+
+  (function loop() { requestAnimationFrame(loop); orbit.update(); renderer.render(scene, camera); })();
+}
+
+function rebuildScene() {
+  gizmo.detach();
+  visualMap.forEach(m => m.material.dispose());
+  colMap.forEach(m => { m.material.dispose(); m.geometry.dispose(); });
+  while (robotRoot.children.length) robotRoot.remove(robotRoot.children[0]);
+  [linkObj, visualMap, frameMap, motionMap, arrowMap, colMap].forEach(m => m.clear());
+
+  Object.values(S.links).forEach(l => {
+    const g = new THREE.Group(); linkObj.set(l.id, g);
+    if (l.geometry) {
+      const mat = new THREE.MeshStandardMaterial({ color: l.color, transparent: l.alpha < 1, opacity: l.alpha, roughness: 0.45, metalness: 0.25, side: THREE.DoubleSide });
+      const m = new THREE.Mesh(l.geometry, mat); m.userData = { kind: 'visual', id: l.id };
+      m.rotation.order = 'ZYX'; g.add(m); visualMap.set(l.id, m);
+    }
+    if (S.showFrames) g.add(new THREE.AxesHelper(0.05));
+    if (S.showCollision) {
+      const spec = collisionSpec(l);
+      if (spec) {
+        let geo;
+        if (spec.type === 'box') geo = new THREE.BoxGeometry(...spec.size);
+        else if (spec.type === 'cylinder') { geo = new THREE.CylinderGeometry(spec.radius, spec.radius, spec.length, 20); geo.rotateX(Math.PI / 2); }
+        else geo = new THREE.SphereGeometry(spec.radius, 20, 14);
+        const cm = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x10b981, wireframe: true }));
+        cm.rotation.order = 'ZYX'; g.add(cm); colMap.set(l.id, cm);
+      }
+    }
+  });
+  Object.values(S.joints).forEach(j => {
+    const frame = new THREE.Group(), motion = new THREE.Group();
+    frame.rotation.order = 'ZYX'; frame.userData = { kind: 'joint', id: j.id };
+    const arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), 0.12, 0xa855f7);
+    frame.add(arrow); frame.add(motion);
+    motion.add(linkObj.get(j.child));
+    linkObj.get(j.parent).add(frame);
+    frameMap.set(j.id, frame); motionMap.set(j.id, motion); arrowMap.set(j.id, arrow);
+  });
+  robotRoot.add(linkObj.get(S.root));
+  applyPose(); refreshHighlight(); attachGizmo();
+  $('hint').classList.toggle('hidden', visualMap.size > 0);
+}
+
+function applyPose() {
+  applyMimicValues();
+  Object.values(S.joints).forEach(j => {
+    const f = frameMap.get(j.id), m = motionMap.get(j.id); if (!f) return;
+    f.position.set(...j.origin.xyz);
+    f.rotation.set(j.origin.rpy[0] * D2R, j.origin.rpy[1] * D2R, j.origin.rpy[2] * D2R, 'ZYX');
+    m.position.set(0, 0, 0); m.quaternion.identity();
+    const ax = new THREE.Vector3(...j.axis); const has = ax.lengthSq() > 1e-12; ax.normalize();
+    if (has && (j.type === 'revolute' || j.type === 'continuous')) m.quaternion.setFromAxisAngle(ax, j.value || 0);
+    else if (has && j.type === 'prismatic') m.position.copy(ax).multiplyScalar(j.value || 0);
+    const a = arrowMap.get(j.id); a.visible = j.type !== 'fixed' && has; if (has) a.setDirection(ax);
+  });
+  Object.values(S.links).forEach(l => {
+    const v = visualMap.get(l.id);
+    if (v) { v.position.set(...l.visual.xyz); v.rotation.set(l.visual.rpy[0] * D2R, l.visual.rpy[1] * D2R, l.visual.rpy[2] * D2R, 'ZYX'); }
+    const c = colMap.get(l.id), spec = collisionSpec(l);
+    if (c && spec) { c.position.set(...spec.pose.xyz); c.rotation.set(spec.pose.rpy[0] * D2R, spec.pose.rpy[1] * D2R, spec.pose.rpy[2] * D2R, 'ZYX'); }
+  });
+  refreshJointSliderReadouts();
+}
+function refreshHighlight() {
+  let hl = null;
+  if (S.sel) hl = S.sel.type === 'link' ? S.sel.id : (S.joints[S.sel.id] || {}).child;
+  visualMap.forEach((m, id) => m.material.emissive.setHex(id === hl ? 0x1d3a8a : 0x000000));
+}
+function attachGizmo() {
+  gizmo.detach();
+  if (S.gizmoMode === 'select' || !S.sel) return;
+  let obj = null;
+  if (S.sel.type === 'joint') obj = frameMap.get(S.sel.id);
+  else {
+    const l = S.links[S.sel.id];
+    if (S.editTarget === 'joint') {
+      const j = jointOfChild(l.id);
+      if (j) obj = frameMap.get(j.id);
+    } else {
+      obj = visualMap.get(l.id);
+    }
+  }
+  if (obj) gizmo.attach(obj);
+}
+function fitView() {
+  robotRoot.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  visualMap.forEach(m => box.union(new THREE.Box3().setFromObject(m)));
+  if (box.isEmpty()) { camera.position.set(0.7, -0.9, 0.6); orbit.target.set(0, 0, 0); return; }
+  const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3()).length() || 0.5;
+  camera.position.copy(c).add(new THREE.Vector3(0.8, -1, 0.65).normalize().multiplyScalar(s * 1.5 + 0.05));
+  orbit.target.copy(c);
+  camera.near = Math.max(0.0005, s / 1000); camera.far = s * 100 + 100; camera.updateProjectionMatrix();
+}
+
+/* ============================================================
+   UI : tree, sliders, inspector
+   ============================================================ */
+function renderTree() {
+  const box = $('tree-container'); box.innerHTML = '';
+  const row = (text, indent, cls, sub, onclick) => {
+    const d = document.createElement('div');
+    d.className = `flex items-center justify-between px-2 py-1 rounded text-xs cursor-pointer border ${cls}`;
+    // Compress and cap indentation so deeply nested links remain visible and clickable.
+    d.style.paddingLeft = `${Math.min(indent, 10) * 8 + 8}px`;
+    d.title = text;
+    const a = document.createElement('span'); a.className = 'truncate min-w-0'; a.textContent = text;
+    const b = document.createElement('span'); b.className = 'text-[9px] text-slate-500 font-mono ml-2'; b.textContent = sub || '';
+    d.append(a, b); d.onclick = e => { e.stopPropagation(); onclick(); }; box.appendChild(d);
+  };
+  (function walk(id, depth) {
+    const l = S.links[id]; const sel = S.sel && S.sel.type === 'link' && S.sel.id === id;
+    row('▣ ' + l.name, depth, sel ? 'bg-blue-600/20 border-blue-500/50 text-white' : 'border-transparent text-slate-300 hover:bg-slate-800/60',
+      id === S.root ? 'BASE' : (l.geometry ? 'mesh' : 'empty'), () => selectEntity(id, 'link'));
+    childrenJoints(id).forEach(j => {
+      const js = S.sel && S.sel.type === 'joint' && S.sel.id === j.id;
+      row('⤷ ' + j.name, depth + 1, js ? 'bg-purple-600/20 border-purple-500/50 text-white' : 'border-transparent text-purple-300 hover:bg-slate-800/40', j.type, () => selectEntity(j.id, 'joint'));
+      walk(j.child, depth + 2);
+    });
+  })(S.root, 0);
+  $('link-count').textContent = Object.keys(S.links).length;
+  $('joint-count').textContent = Object.keys(S.joints).length;
+}
+function renderSliders() {
+  const box = $('sliders'); box.innerHTML = '';
+  const act = Object.values(S.joints).filter(j => j.type !== 'fixed');
+  if (!act.length) { box.innerHTML = '<p class="text-xs text-slate-500 italic">No movable joints yet.</p>'; return; }
+  act.forEach(j => {
+    const rot = j.type !== 'prismatic', k = rot ? R2D : 1;
+    let lo = j.limits.lower, hi = j.limits.upper;
+    if (j.type === 'continuous') { lo = -Math.PI; hi = Math.PI; }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo >= hi) { lo = rot ? -Math.PI : -0.05; hi = rot ? Math.PI : 0.05; }
+    const d = document.createElement('div'); d.className = 'bg-slate-900 p-2 rounded border border-slate-800';
+    d.innerHTML = `<div class="flex justify-between text-[11px] gap-2"><span class="font-mono text-purple-300 min-w-0 truncate"></span><span class="font-mono text-slate-400 shrink-0"></span></div>
+      <input type="range" class="joint-slider w-full accent-purple-500" min="${lo}" max="${hi}" step="0.005">`;
+    const title = d.children[0].children[0];
+    title.textContent = j.name;
+    title.title = j.name;
+    const val = d.children[0].children[1], sl = d.children[1];
+    sl.dataset.jointId = j.id;
+    sl.disabled = !!j.mimic;
+    sl.classList.toggle('opacity-40', !!j.mimic);
+    sl.value = Math.min(hi, Math.max(lo, Number(j.value) || 0));
+    val.textContent = ((Number(j.value) || 0) * k).toFixed(3) + (rot ? '°' : ' m');
+    if (j.mimic) {
+      const src = S.joints[j.mimic.jointId];
+      val.textContent += ` ← ${src ? src.name : 'missing source'}`;
+      val.title = 'Driven by mimic relationship; change the source joint slider.';
+    }
+    sl.oninput = () => {
+      if (j.mimic) return;
+      j.value = parseFloat(sl.value);
+      applyPose();
+    };
+    box.appendChild(d);
+  });
+}
+function refreshJointSliderReadouts() {
+  document.querySelectorAll('.joint-slider').forEach(sl => {
+    const j = S.joints[sl.dataset.jointId];
+    if (!j) return;
+    const rot = j.type !== 'prismatic', k = rot ? R2D : 1;
+    sl.disabled = !!j.mimic;
+    sl.classList.toggle('opacity-40', !!j.mimic);
+    const min = Number(sl.min), max = Number(sl.max), q = Number(j.value) || 0;
+    sl.value = Math.min(Number.isFinite(max) ? max : q, Math.max(Number.isFinite(min) ? min : q, q));
+    const val = sl.previousElementSibling && sl.previousElementSibling.children[1];
+    if (!val) return;
+    val.textContent = ((Number(j.value) || 0) * k).toFixed(3) + (rot ? '°' : ' m');
+    if (j.mimic) {
+      const src = S.joints[j.mimic.jointId];
+      val.textContent += ` ← ${src ? src.name : 'missing source'}`;
+      val.title = 'Driven by mimic relationship; change the source joint slider.';
+    } else val.title = '';
+  });
+}
+function setVal(id, v) { const el = $(id); if (document.activeElement !== el) el.value = v; }
+function presetFor(d) { return ['2700', '7850', '1040', '1550'].includes(String(Math.round(d))) ? String(Math.round(d)) : 'custom'; }
+const jUnit = j => j.type === 'prismatic' ? 1 : R2D;
+
+function syncInspector() {
+  const l = selLink(), j = selJoint();
+  updatePointPickUI();
+  $('inspector-empty').classList.toggle('hidden', !!(l || j));
+  $('link-inspector').classList.toggle('hidden', !l);
+  $('joint-inspector').classList.toggle('hidden', !j);
+  const badge = $('sel-badge');
+  if (!l && !j) { badge.textContent = 'None'; return; }
+  if (l) {
+    badge.textContent = 'Link · ' + l.name;
+    setVal('l-name', l.name); setVal('l-color', l.color); setVal('l-alpha', l.alpha); setVal('l-collision', l.collision);
+    ['x', 'y', 'z'].forEach((c, i) => setVal('v-' + c, fp(l.visual.xyz[i])));
+    ['r', 'p', 'w'].forEach((c, i) => setVal('v-' + c, fp(l.visual.rpy[i])));
+    const p = l.props;
+    $('l-info').textContent = p ? `bbox ${p.size.map(v => v.toFixed(4)).join(' × ')} m\nvolume ${p.volume.toExponential(3)} m³${p.valid ? '' : '  ⚠ mesh not watertight, bbox estimate used'}` : 'No mesh (empty link).';
+    setVal('l-density', fp(l.density)); setVal('l-mass', fp(l.mass)); setVal('l-preset', presetFor(l.density));
+    const I = linkInertia(l);
+    setVal('i-xx', fp(I.ixx)); setVal('i-xy', fp(I.ixy)); setVal('i-xz', fp(I.ixz)); setVal('i-yy', fp(I.iyy)); setVal('i-yz', fp(I.iyz)); setVal('i-zz', fp(I.izz));
+    $('inertia-state').textContent = l.inertiaOverride ? 'manual override' : 'auto from mesh';
+    $('btn-del-link').classList.toggle('hidden', l.id === S.root);
+    $('btn-edit-incoming').classList.toggle('hidden', l.id === S.root);
+  } else {
+    badge.textContent = 'Joint · ' + j.name;
+    setVal('j-name', j.name); setVal('j-type', j.type);
+    const ps = $('j-parent'); ps.innerHTML = '';
+    const bad = descendants(j.child);
+    Object.values(S.links).filter(x => !bad.has(x.id)).forEach(x => { const o = document.createElement('option'); o.value = x.id; o.textContent = x.name; o.selected = x.id === j.parent; ps.appendChild(o); });
+    $('j-child').value = S.links[j.child].name;
+    ['x', 'y', 'z'].forEach((c, i) => setVal('o-' + c, fp(j.origin.xyz[i])));
+    ['r', 'p', 'w'].forEach((c, i) => setVal('o-' + c, fp(j.origin.rpy[i])));
+    ['x', 'y', 'z'].forEach((c, i) => setVal('a-' + c, fp(j.axis[i])));
+    const mov = j.type !== 'fixed', u = jUnit(j), lim = j.type === 'revolute' || j.type === 'prismatic';
+    $('j-axis-panel').classList.toggle('hidden', !mov); $('j-limit-panel').classList.toggle('hidden', !mov);
+    $('lim-lo-wrap').classList.toggle('hidden', !lim); $('lim-hi-wrap').classList.toggle('hidden', !lim);
+    $('lim-lo-lbl').textContent = j.type === 'prismatic' ? 'Lower (m)' : 'Lower (deg)';
+    $('lim-hi-lbl').textContent = j.type === 'prismatic' ? 'Upper (m)' : 'Upper (deg)';
+    setVal('lim-lo', fp(j.limits.lower * u)); setVal('lim-hi', fp(j.limits.upper * u));
+    setVal('lim-vel', fp(j.limits.velocity)); setVal('lim-eff', fp(j.limits.effort));
+
+    const mimicPanel = $('j-mimic-panel');
+    const mimicEnabled = j.type !== 'fixed';
+    mimicPanel.classList.toggle('hidden', !mimicEnabled);
+    $('j-mimic-enabled').checked = !!j.mimic;
+    $('j-mimic-fields').classList.toggle('hidden', !j.mimic);
+    const sourceSelect = $('j-mimic-source');
+    const currentSourceId = j.mimic && j.mimic.jointId ? j.mimic.jointId : '';
+    const candidates = Object.values(S.joints).filter(x => x.id !== j.id && x.type !== 'fixed' &&
+      (x.id === currentSourceId || !mimicWouldCycle(j.id, x.id)));
+    sourceSelect.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = ''; placeholder.textContent = 'Select source joint…'; sourceSelect.appendChild(placeholder);
+    candidates.forEach(x => {
+      const option = document.createElement('option');
+      option.value = x.id;
+      const invalidCurrent = x.id === currentSourceId && mimicWouldCycle(j.id, x.id);
+      option.textContent = x.name + (x.type !== j.type ? ` (${x.type}; units may differ)` : '') + (invalidCurrent ? ' ⚠ cycle' : '');
+      option.selected = x.id === currentSourceId;
+      sourceSelect.appendChild(option);
+    });
+    if (currentSourceId && !S.joints[currentSourceId]) {
+      const missing = document.createElement('option');
+      missing.value = currentSourceId; missing.textContent = '⚠ Missing source joint'; missing.selected = true;
+      sourceSelect.appendChild(missing);
+    }
+    if (!currentSourceId) sourceSelect.value = candidates.length ? candidates[0].id : '';
+    setVal('j-mimic-multiplier', j.mimic && Number.isFinite(Number(j.mimic.multiplier)) ? j.mimic.multiplier : 1);
+    setVal('j-mimic-offset', j.mimic && Number.isFinite(Number(j.mimic.offset)) ? j.mimic.offset : 0);
+    $('j-mimic-offset-label').textContent = j.type === 'prismatic' ? 'Offset (m)' : 'Offset (rad)';
+    const src = j.mimic && S.joints[j.mimic.jointId];
+    $('j-mimic-summary').textContent = j.mimic
+      ? `q(${j.name}) = ${Number(j.mimic.multiplier ?? 1)} × q(${src ? src.name : 'MISSING SOURCE'}) + ${Number(j.mimic.offset ?? 0)}. Follower slider is disabled and updates automatically.`
+      : 'q_follower = multiplier × q_source + offset. Enable mimic to drive this joint from another movable joint.';
+  }
+}
+function selectEntity(id, type) {
+  if (pointPick.enabled) stopPointPicking();
+  S.sel = id ? { id, type } : null;
+  attachGizmo(); refreshHighlight(); syncInspector(); renderTree();
+}
+function refreshAll() { rebuildScene(); renderTree(); renderSliders(); syncInspector(); }
+
+/* ============================================================
+   POINT-BASED JOINT PLACEMENT (temporary picks; not serialized)
+   ============================================================ */
+function currentPointGroups(j = selJoint()) {
+  if (!j || pointPick.jointId !== j.id) return { A: [], B: [] };
+  return { A: pointPick.A, B: pointPick.B };
+}
+function disposePointMarker(marker) {
+  if (!marker) return;
+  if (marker.parent) marker.parent.remove(marker);
+  marker.geometry?.dispose();
+  if (Array.isArray(marker.material)) marker.material.forEach(m => m.dispose());
+  else marker.material?.dispose();
+}
+function clearPointPickGroup(group) {
+  pointPick[group] = [];
+  pointPick.markers[group].forEach(disposePointMarker);
+  pointPick.markers[group] = [];
+  updatePointPickUI();
+}
+function resetPointPickState() {
+  pointPick.enabled = false;
+  pointPick.jointId = null;
+  pointPick.A = []; pointPick.B = [];
+  pointPick.markers.A.forEach(disposePointMarker);
+  pointPick.markers.B.forEach(disposePointMarker);
+  pointPick.markers = { A: [], B: [] };
+  updatePointPickUI();
+  if (gizmo) attachGizmo();
+}
+function preparePointPickingForJoint(j) {
+  if (pointPick.jointId === j.id) return;
+  pointPick.markers.A.forEach(disposePointMarker);
+  pointPick.markers.B.forEach(disposePointMarker);
+  pointPick = { enabled: pointPick.enabled, group: 'A', jointId: j.id, A: [], B: [], markers: { A: [], B: [] } };
+}
+function pointMarkerSize() {
+  const bounds = new THREE.Box3();
+  visualMap.forEach(m => bounds.expandByObject(m));
+  const diag = bounds.isEmpty() ? 0.1 : bounds.getSize(new THREE.Vector3()).length();
+  return Math.max(0.0008, Math.min(0.0035, diag * 0.012));
+}
+function addJointPickPoint(group, point) {
+  const p = point.clone();
+  pointPick[group].push(p);
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(pointMarkerSize(), 12, 8),
+    new THREE.MeshBasicMaterial({ color: group === 'A' ? 0x22d3ee : 0xfb923c })
+  );
+  marker.position.copy(p);
+  marker.renderOrder = 10;
+  pointMarkerRoot.add(marker);
+  pointPick.markers[group].push(marker);
+  updatePointPickUI();
+}
+function updatePointPickUI() {
+  const j = selJoint();
+  const groups = currentPointGroups(j);
+  const aCount = groups.A.length, bCount = groups.B.length;
+  const status = $('pick-status');
+  if ($('btn-pick-A')) {
+    $('btn-pick-A').textContent = `Set A · ${aCount} points`;
+    $('btn-pick-B').textContent = `Set B · ${bCount} points`;
+    $('btn-pick-A').classList.toggle('on', pointPick.group === 'A');
+    $('btn-pick-B').classList.toggle('on', pointPick.group === 'B');
+    $('btn-pick-toggle').textContent = pointPick.enabled ? 'Stop point picking' : 'Start point picking';
+    $('btn-pick-toggle').classList.toggle('on', pointPick.enabled);
+    $('btn-pick-undo').disabled = !groups[pointPick.group].length;
+    $('btn-pick-undo').classList.toggle('opacity-40', $('btn-pick-undo').disabled);
+  }
+  if (status) {
+    if (!j) status.textContent = 'Select a joint to begin.';
+    else if (!S.links[j.child]?.geometry) status.textContent = 'The child link needs a mesh.';
+    else if (pointPick.enabled && pointPick.jointId === j.id) status.textContent = `Picking Set ${pointPick.group} · click the child mesh`;
+    else status.textContent = 'Picking is off.';
+  }
+}
+function startPointPicking() {
+  const j = selJoint();
+  if (!j) { toast('Select a joint in the hierarchy first.', 'warn'); return; }
+  if (!S.links[j.child]?.geometry || !visualMap.has(j.child)) { toast('The joint child link needs an imported mesh.', 'warn'); return; }
+  preparePointPickingForJoint(j);
+  pointPick.enabled = true;
+  gizmo.detach();
+  updatePointPickUI();
+  toast(`Point picking enabled. Click points on ${S.links[j.child].name}; choose Set A or Set B as needed.`);
+}
+function stopPointPicking() {
+  pointPick.enabled = false;
+  if (gizmo) attachGizmo();
+  updatePointPickUI();
+}
+function centroidOfPoints(points) {
+  if (!points?.length) throw new Error('Select at least one point in the active set.');
+  const c = new THREE.Vector3();
+  points.forEach(p => c.add(p));
+  return c.multiplyScalar(1 / points.length);
+}
+function solveLinear3(A, b) {
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let col = 0; col < 3; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < 3; r++) if (Math.abs(M[r][col]) > Math.abs(M[pivot][col])) pivot = r;
+    if (Math.abs(M[pivot][col]) < 1e-12) throw new Error('Selected points do not define a stable circle. Add more spread-out points.');
+    [M[col], M[pivot]] = [M[pivot], M[col]];
+    const div = M[col][col]; for (let c = col; c < 4; c++) M[col][c] /= div;
+    for (let r = 0; r < 3; r++) if (r !== col) {
+      const factor = M[r][col]; for (let c = col; c < 4; c++) M[r][c] -= factor * M[col][c];
+    }
+  }
+  return [M[0][3], M[1][3], M[2][3]];
+}
+function fitCircleCentre(points) {
+  if (!points || points.length < 3) throw new Error('Circle fit needs at least 3 points per feature; 4–8 points is better.');
+  const p0 = points[0];
+  let p1 = null, maxDist = 0;
+  for (let i = 1; i < points.length; i++) {
+    const d = points[i].distanceToSquared(p0);
+    if (d > maxDist) { maxDist = d; p1 = points[i]; }
+  }
+  if (!p1 || maxDist < 1e-12) throw new Error('Selected points are too close together.');
+  const baseline = p1.clone().sub(p0);
+  let normal = null, bestArea = 0;
+  for (const p of points) {
+    const cross = new THREE.Vector3().crossVectors(baseline, p.clone().sub(p0));
+    if (cross.lengthSq() > bestArea) { bestArea = cross.lengthSq(); normal = cross; }
+  }
+  if (!normal || bestArea < 1e-14) throw new Error('Selected points are nearly collinear; choose points around the face perimeter.');
+  normal.normalize();
+  const u = baseline.normalize();
+  const v = new THREE.Vector3().crossVectors(normal, u).normalize();
+  const coords = points.map(p => { const d = p.clone().sub(p0); return [d.dot(u), d.dot(v), d.dot(normal)]; });
+  const span = Math.sqrt(Math.max(...coords.map(c => c[0] * c[0] + c[1] * c[1])));
+  const maxPlaneError = Math.max(...coords.map(c => Math.abs(c[2])));
+  if (maxPlaneError > Math.max(1e-5, span * 0.06)) {
+    throw new Error('Circle-fit points must lie on the same flat face. Choose points on the flat wheel face, not its side wall.');
+  }
+  let sx=0, sy=0, sxx=0, syy=0, sxy=0, sr2=0, sxr2=0, syr2=0;
+  for (const [x, y] of coords) {
+    const r2 = x*x + y*y;
+    sx += x; sy += y; sxx += x*x; syy += y*y; sxy += x*y;
+    sr2 += r2; sxr2 += x*r2; syr2 += y*r2;
+  }
+  const n = coords.length;
+  const [D, E, F] = solveLinear3([[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, n]], [-sxr2, -syr2, -sr2]);
+  const cx = -D / 2, cy = -E / 2, radius2 = cx*cx + cy*cy - F;
+  if (!(radius2 > 1e-14) || !Number.isFinite(radius2)) throw new Error('Could not fit a valid circle. Add points spread around the wheel perimeter.');
+  return p0.clone().addScaledVector(u, cx).addScaledVector(v, cy);
+}
+function getSelectedFeatureCentre(group, method, j) {
+  const points = currentPointGroups(j)[group];
+  if (!points.length) throw new Error(`Set ${group} has no points. Start picking and select points on that feature.`);
+  return method === 'circle' ? fitCircleCentre(points) : centroidOfPoints(points);
+}
+function jointParentLocalPoint(worldPoint, parentId) {
+  robotRoot.updateMatrixWorld(true);
+  const parent = linkObj.get(parentId);
+  if (!parent) throw new Error('Joint parent link is not available in the viewport.');
+  return worldPoint.clone().applyMatrix4(parent.matrixWorld.clone().invert());
+}
+function placeJointAtPickedCentre() {
+  const j = selJoint(); if (!j) { toast('Select a joint first.', 'warn'); return; }
+  try {
+    const centre = getSelectedFeatureCentre('A', $('pick-method').value, j);
+    const local = jointParentLocalPoint(centre, j.parent);
+    setJointOrigin(j, [local.x, local.y, local.z], j.origin.rpy, S.keep);
+    applyPose(); syncInspector();
+    toast('Joint origin placed at Set A centre. Fine-tune it with the numeric fields or gizmo.');
+  } catch (e) { toast(e.message, 'warn'); }
+}
+function deriveJointAxisFromPickedCentres() {
+  const j = selJoint(); if (!j) { toast('Select a joint first.', 'warn'); return; }
+  try {
+    const method = $('pick-method').value;
+    const centreA = getSelectedFeatureCentre('A', method, j);
+    const centreB = getSelectedFeatureCentre('B', method, j);
+    const localA = jointParentLocalPoint(centreA, j.parent);
+    const localB = jointParentLocalPoint(centreB, j.parent);
+    const direction = localB.clone().sub(localA);
+    if (direction.length() < 1e-6) throw new Error('Set A and Set B centres are too close together to define an axis.');
+    direction.normalize();
+    const midpoint = localA.clone().add(localB).multiplyScalar(0.5);
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction);
+    const e = new THREE.Euler().setFromQuaternion(q, 'ZYX');
+    const rpy = [e.x * R2D, e.y * R2D, e.z * R2D];
+    // Orient the joint frame's local Z along the inferred axis so axis=[0,0,1] is consistent.
+    j.axis = [0, 0, 1];
+    setJointOrigin(j, [midpoint.x, midpoint.y, midpoint.z], rpy, S.keep);
+    applyPose(); syncInspector();
+    toast('Joint axis estimated from Set A → Set B. Inspect the axis and manually fine-tune if needed.');
+  } catch (e) { toast(e.message, 'warn'); }
+}
+
+/* ============================================================
+   IMPORT  (STL / OBJ / STEP)
+   ============================================================ */
+function mergeToGeometry(arrays) {
+  const total = arrays.reduce((a, b) => a + b.length, 0), out = new Float32Array(total);
+  let o = 0; arrays.forEach(a => { out.set(a, o); o += a.length; });
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(out, 3)); return g;
+}
+function nonIndexedPositions(geo) {
+  const g = geo.index ? geo.toNonIndexed() : geo; return g.attributes.position.array;
+}
+function objToGeometry(group) {
+  group.updateMatrixWorld(true); const arrs = [];
+  group.traverse(c => { if (c.isMesh) { const g = c.geometry.clone().applyMatrix4(c.matrixWorld); arrs.push(nonIndexedPositions(g)); } });
+  if (!arrs.length) throw new Error('OBJ has no meshes'); return mergeToGeometry(arrs);
+}
+let occtPromise = null;
+function loadOcct() {
+  if (occtPromise) return occtPromise;
+  const base = 'https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/';
+  occtPromise = new Promise((res, rej) => {
+    const s = document.createElement('script'); s.src = base + 'occt-import-js.js';
+    s.onload = () => occtimportjs({ locateFile: n => base + n }).then(res, rej);
+    s.onerror = () => rej(new Error('Could not load the STEP converter (needs internet).'));
+    document.head.appendChild(s);
+  });
+  occtPromise.catch(() => { occtPromise = null; });
+  return occtPromise;
+}
+function stepGeometry(meshes) {
+  return mergeToGeometry(meshes.map(m => {
+    const p = m.attributes.position.array, ix = m.index.array, out = new Float32Array(ix.length * 3);
+    for (let i = 0; i < ix.length; i++) { out[3 * i] = p[3 * ix[i]]; out[3 * i + 1] = p[3 * ix[i] + 1]; out[3 * i + 2] = p[3 * ix[i] + 2]; }
+    return out;
+  }));
+}
+async function parseStep(buf, base) {
+  toast('Converting STEP (first time downloads the converter)…');
+  const occt = await loadOcct();
+  const res = occt.ReadStepFile(new Uint8Array(buf), null);
+  if (!res.success) throw new Error('STEP parsing failed');
+  const metas = res.meshes.filter(m => m.index && m.index.array.length);
+  if (!metas.length) throw new Error('STEP contains no solid bodies');
+  if ($('step-split').checked) {
+    if (metas.length > 60 && !confirm(`This STEP has ${metas.length} bodies — create ${metas.length} links?`)) return [{ name: base, geometry: stepGeometry(metas) }];
+    return metas.map((m, i) => ({ name: m.name || `${base}_${i + 1}`, geometry: stepGeometry([m]),
+      color: m.color ? '#' + new THREE.Color(m.color[0], m.color[1], m.color[2]).getHexString() : null }));
+  }
+  return [{ name: base, geometry: stepGeometry(metas) }];
+}
+
+async function importFiles(fileList, forceTarget) {
+  const files = [...fileList]; if (!files.length) return;
+  const scale = parseFloat($('unit-scale').value);
+  let parentId = forceTarget || (S.sel ? (S.sel.type === 'link' ? S.sel.id : S.joints[S.sel.id].child) : S.root);
+  let parentFree = !S.links[parentId].geometry, firstId = null, n = 0, lastSize = null;
+  for (const file of files) {
+    const ext = file.name.split('.').pop().toLowerCase(), base = file.name.replace(/\.[^.]+$/, '');
+    try {
+      let parts;
+      if (ext === 'stl') parts = [{ name: base, geometry: new THREE.STLLoader().parse(await file.arrayBuffer()) }];
+      else if (ext === 'obj') parts = [{ name: base, geometry: objToGeometry(new THREE.OBJLoader().parse(await file.text())) }];
+      else if (ext === 'step' || ext === 'stp') parts = await parseStep(await file.arrayBuffer(), base);
+      else { toast(`Unsupported file: ${file.name}`, 'warn'); continue; }
+      for (const part of parts) {
+        const g = mergeToGeometry([nonIndexedPositions(part.geometry)]);
+        g.scale(scale, scale, scale); g.computeVertexNormals();
+        let link;
+        if (parentFree) { link = S.links[parentId]; parentFree = false; }
+        else { link = makeLink(part.name); addJoint(parentId, link.id, 'fixed'); }
+        link.geometry = g; link.originalGeometry = null; if (part.color) link.color = part.color;
+        computeProps(link); link.mass = link.props.volume * link.density; link.inertiaOverride = null;
+        if (!firstId) firstId = link.id; n++; lastSize = link.props.size;
+      }
+    } catch (err) { console.error(err); toast(`Import failed for ${file.name}: ${err.message}`, 'error'); }
+  }
+  if (!n) return;
+  refreshAll(); fitView(); selectEntity(firstId, 'link');
+  toast(`Imported ${n} part(s). Last size ${lastSize.map(v => v.toFixed(3)).join(' × ')} m — if that's wrong, change Units and re-import.`);
+}
+
+/* ============================================================
+   EXPORT
+   ============================================================ */
+const f6 = n => { const v = Math.round(n * 1e6) / 1e6; return (Object.is(v, -0) ? 0 : v).toString(); };
+const fsig = n => Number(Number(n).toPrecision(8)).toString();
+const xyzS = a => a.map(f6).join(' ');
+const rpyS = a => a.map(d => f6(d * D2R)).join(' ');
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function generateURDF() {
+  const pkg = S.pkg; let x = `<?xml version="1.0"?>\n<robot name="${esc(S.robotName)}">\n\n`;
+  Object.values(S.links).forEach(l => {
+    x += `  <link name="${esc(l.name)}">\n`;
+    if (l.props && l.mass > 0) {
+      const I = linkInertia(l), c = visualPoint(l, l.props.com);
+      x += `    <inertial>\n      <origin xyz="${xyzS([c.x, c.y, c.z])}" rpy="${rpyS(l.visual.rpy)}"/>\n      <mass value="${fsig(l.mass)}"/>\n`;
+      x += `      <inertia ixx="${fsig(I.ixx)}" ixy="${fsig(I.ixy)}" ixz="${fsig(I.ixz)}" iyy="${fsig(I.iyy)}" iyz="${fsig(I.iyz)}" izz="${fsig(I.izz)}"/>\n    </inertial>\n`;
+    }
+    if (l.geometry) {
+      const rgb = new THREE.Color(l.color);
+      x += `    <visual>\n      <origin xyz="${xyzS(l.visual.xyz)}" rpy="${rpyS(l.visual.rpy)}"/>\n      <geometry>\n        <mesh filename="package://${pkg}/meshes/${l.name}.stl"/>\n      </geometry>\n`;
+      x += `      <material name="${esc(l.name)}_mat"><color rgba="${f6(rgb.r)} ${f6(rgb.g)} ${f6(rgb.b)} ${f6(l.alpha)}"/></material>\n    </visual>\n`;
+      if (l.collision !== 'none') {
+        const spec = collisionSpec(l);
+        x += `    <collision>\n`;
+        if (!spec) x += `      <origin xyz="${xyzS(l.visual.xyz)}" rpy="${rpyS(l.visual.rpy)}"/>\n      <geometry><mesh filename="package://${pkg}/meshes/${l.name}.stl"/></geometry>\n`;
+        else {
+          x += `      <origin xyz="${xyzS(spec.pose.xyz)}" rpy="${rpyS(spec.pose.rpy)}"/>\n      <geometry>`;
+          if (spec.type === 'box') x += `<box size="${xyzS(spec.size)}"/>`;
+          else if (spec.type === 'cylinder') x += `<cylinder radius="${f6(spec.radius)}" length="${f6(spec.length)}"/>`;
+          else x += `<sphere radius="${f6(spec.radius)}"/>`;
+          x += `</geometry>\n`;
+        }
+        x += `    </collision>\n`;
+      }
+    }
+    x += `  </link>\n\n`;
+  });
+  Object.values(S.joints).forEach(j => {
+    x += `  <joint name="${esc(j.name)}" type="${j.type}">\n    <parent link="${esc(S.links[j.parent].name)}"/>\n    <child link="${esc(S.links[j.child].name)}"/>\n`;
+    x += `    <origin xyz="${xyzS(j.origin.xyz)}" rpy="${rpyS(j.origin.rpy)}"/>\n`;
+    if (j.type !== 'fixed') {
+      const a = new THREE.Vector3(...j.axis); if (a.lengthSq() > 1e-12) a.normalize(); else a.set(0, 0, 1);
+      x += `    <axis xyz="${f6(a.x)} ${f6(a.y)} ${f6(a.z)}"/>\n`;
+      if (j.type === 'continuous') x += `    <limit effort="${f6(j.limits.effort)}" velocity="${f6(j.limits.velocity)}"/>\n`;
+      else x += `    <limit lower="${f6(j.limits.lower)}" upper="${f6(j.limits.upper)}" effort="${f6(j.limits.effort)}" velocity="${f6(j.limits.velocity)}"/>\n`;
+    }
+    if (j.mimic && j.type !== 'fixed') {
+      const source = S.joints[j.mimic.jointId];
+      if (source && source.id !== j.id) {
+        const multiplier = Number.isFinite(Number(j.mimic.multiplier)) ? Number(j.mimic.multiplier) : 1;
+        const offset = Number.isFinite(Number(j.mimic.offset)) ? Number(j.mimic.offset) : 0;
+        x += `    <mimic joint="${esc(source.name)}" multiplier="${f6(multiplier)}" offset="${f6(offset)}"/>\n`;
+      }
+    }
+    x += `  </joint>\n\n`;
+  });
+  return x + `</robot>\n`;
+}
+
+function validateURDF() {
+  const rep = [];
+  const add = (t, s) => rep.push({ t, s });
+  const names = new Set();
+  if (!S.links[S.root]) add('error', 'The configured root link does not exist.');
+  if (!/^[a-z][a-z0-9_]*$/.test(S.pkg)) add('error', `ROS package name "${S.pkg}" is not valid; use lowercase letters, numbers and underscores, starting with a letter.`);
+  Object.values(S.links).forEach(l => {
+    if (names.has(l.name.toLowerCase())) add('error', `Duplicate link name "${l.name}".`);
+    names.add(l.name.toLowerCase());
+    if (l.geometry && !(l.mass > 0)) add('error', `Link "${l.name}" has a mesh but mass ≤ 0 — simulators will reject or explode.`);
+    if (!l.geometry && l.id !== S.root) add('warn', `Link "${l.name}" has no mesh (virtual link) — fine for frames, otherwise import a mesh.`);
+    if (l.props) {
+      const s = l.props.size, mx = Math.max(...s);
+      if (mx > 10) add('warn', `"${l.name}" is ${mx.toFixed(1)} m across — wrong import units? (current size assumes ${$('unit-scale').selectedOptions[0].text})`);
+      if (mx < 0.005) add('warn', `"${l.name}" is only ${(mx * 1000).toFixed(2)} mm across — wrong import units?`);
+      if (!l.props.valid) add('warn', `"${l.name}" mesh is not watertight; mass/inertia use a bounding-box estimate.`);
+      const I = linkInertia(l);
+      if (l.mass > 0 && (I.ixx <= 0 || I.iyy <= 0 || I.izz <= 0 || I.ixx + I.iyy < I.izz * 0.999 || I.ixx + I.izz < I.iyy * 0.999 || I.iyy + I.izz < I.ixx * 0.999))
+        add('error', `Inertia of "${l.name}" violates the triangle inequality (not physically valid). Use "recompute from mesh".`);
+    }
+  });
+  const jointNames = new Set();
+  const parentOf = new Map();
+  Object.values(S.joints).forEach(j => {
+    if (jointNames.has(j.name.toLowerCase())) add('error', `Duplicate joint name "${j.name}".`);
+    jointNames.add(j.name.toLowerCase());
+    if (!S.links[j.parent] || !S.links[j.child]) {
+      add('error', `Joint "${j.name}" references a missing parent or child link.`);
+    } else {
+      if (j.parent === j.child) add('error', `Joint "${j.name}" cannot connect a link to itself.`);
+      if (parentOf.has(j.child)) add('error', `Link "${S.links[j.child].name}" has more than one parent joint.`);
+      parentOf.set(j.child, j.id);
+    }
+    if (j.type === 'revolute' && j.limits.lower >= j.limits.upper) add('error', `Joint "${j.name}": lower limit must be below upper limit.`);
+    if (j.type === 'prismatic' && j.limits.lower >= j.limits.upper) add('error', `Joint "${j.name}": lower limit must be below upper limit.`);
+    if (j.type !== 'fixed' && new THREE.Vector3(...j.axis).lengthSq() < 1e-12) add('error', `Joint "${j.name}" has a zero axis.`);
+    if (j.type !== 'fixed' && !(j.limits.effort > 0 && j.limits.velocity > 0)) add('warn', `Joint "${j.name}": effort/velocity should be > 0.`);
+    if (j.mimic) {
+      const source = S.joints[j.mimic.jointId];
+      if (j.type === 'fixed') add('error', `Joint "${j.name}" is fixed and cannot be a mimic follower.`);
+      if (!source) add('error', `Joint "${j.name}" mimics a missing source joint.`);
+      else {
+        if (source.id === j.id) add('error', `Joint "${j.name}" cannot mimic itself.`);
+        if (source.type === 'fixed') add('error', `Joint "${j.name}" cannot mimic fixed joint "${source.name}".`);
+        if (source.type !== j.type) add('warn', `Mimic follower "${j.name}" is ${j.type}, while source "${source.name}" is ${source.type}; make sure multiplier/offset units are intentional.`);
+      }
+      if (!Number.isFinite(Number(j.mimic.multiplier)) || !Number.isFinite(Number(j.mimic.offset)))
+        add('error', `Mimic settings for "${j.name}" must have finite multiplier and offset values.`);
+    }
+  });
+  // A mimic chain is a dependency graph too; detect cycles separately from the kinematic tree.
+  const reportedMimicCycles = new Set();
+  Object.values(S.joints).forEach(start => {
+    const chain = [], indexes = new Map();
+    let current = start;
+    while (current && current.mimic && current.mimic.jointId && S.joints[current.mimic.jointId]) {
+      if (indexes.has(current.id)) {
+        const cycle = chain.slice(indexes.get(current.id)).map(x => x.id).sort().join('|');
+        if (!reportedMimicCycles.has(cycle)) {
+          reportedMimicCycles.add(cycle);
+          add('error', `Mimic dependency cycle detected among: ${chain.slice(indexes.get(current.id)).map(x => x.name).join(' → ')}.`);
+        }
+        break;
+      }
+      indexes.set(current.id, chain.length); chain.push(current);
+      current = S.joints[current.mimic.jointId];
+    }
+  });
+  // Ensure every link is reachable from the root, and detect accidental cycles.
+  if (S.links[S.root]) {
+    const visited = new Set(), visiting = new Set();
+    const walk = id => {
+      if (visiting.has(id)) { add('error', `Kinematic cycle detected at link "${S.links[id]?.name || id}".`); return; }
+      if (visited.has(id)) return;
+      visiting.add(id);
+      childrenJoints(id).forEach(j => { if (S.links[j.child]) walk(j.child); });
+      visiting.delete(id); visited.add(id);
+    };
+    walk(S.root);
+    const unreachable = Object.values(S.links).filter(l => !visited.has(l.id));
+    if (unreachable.length) add('error', `Unreachable links: ${unreachable.map(l => l.name).join(', ')}.`);
+  }
+  const box = $('val-content'); box.innerHTML = '';
+  if (!rep.length) box.innerHTML = '<div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded text-emerald-300">No problems found. The kinematic tree is connected, names are unique, and checked masses and inertias are valid.</div>';
+  rep.forEach(r => {
+    const d = document.createElement('div');
+    d.className = `p-2.5 rounded border ${r.t === 'error' ? 'bg-rose-500/10 border-rose-500/30 text-rose-300' : 'bg-amber-500/10 border-amber-500/30 text-amber-300'}`;
+    d.textContent = (r.t === 'error' ? 'Error: ' : 'Warning: ') + r.s; box.appendChild(d);
+  });
+  $('modal-val').classList.remove('hidden');
+}
+
+function download(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.style.display = 'none';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function exportZip() {
+  try {
+  const zip = new JSZip(), pkg = S.pkg, rn = S.robotName, ros2 = S.ros === '2', ex = new THREE.STLExporter();
+  zip.file(`${pkg}/urdf/${rn}.urdf`, generateURDF());
+  Object.values(S.links).forEach(l => {
+    if (!l.geometry) return;
+    const dv = ex.parse(new THREE.Mesh(l.geometry), { binary: true });
+    zip.file(`${pkg}/meshes/${l.name}.stl`, new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength));
+  });
+  if (ros2) {
+    zip.file(`${pkg}/package.xml`, `<?xml version="1.0"?>
+<package format="3">
+  <name>${pkg}</name>
+  <version>0.1.0</version>
+  <description>URDF description for ${rn}</description>
+  <maintainer email="user@example.com">URDF Studio</maintainer>
+  <license>BSD-3-Clause</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher_gui</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
+`);
+    zip.file(`${pkg}/CMakeLists.txt`, `cmake_minimum_required(VERSION 3.8)
+project(${pkg})
+find_package(ament_cmake REQUIRED)
+install(DIRECTORY urdf meshes launch DESTINATION share/\${PROJECT_NAME})
+ament_package()
+`);
+    zip.file(`${pkg}/launch/display.launch.py`, `import os
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch_ros.actions import Node
+
+
+def generate_launch_description():
+    share = get_package_share_directory('${pkg}')
+    with open(os.path.join(share, 'urdf', '${rn}.urdf'), 'r') as f:
+        robot_description = f.read()
+    return LaunchDescription([
+        Node(package='robot_state_publisher', executable='robot_state_publisher',
+             parameters=[{'robot_description': robot_description}]),
+        Node(package='joint_state_publisher_gui', executable='joint_state_publisher_gui'),
+        Node(package='rviz2', executable='rviz2'),
+    ])
+`);
+  } else {
+    zip.file(`${pkg}/package.xml`, `<?xml version="1.0"?>
+<package format="2">
+  <name>${pkg}</name>
+  <version>0.1.0</version>
+  <description>URDF description for ${rn}</description>
+  <maintainer email="user@example.com">URDF Studio</maintainer>
+  <license>BSD</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher_gui</exec_depend>
+  <exec_depend>rviz</exec_depend>
+</package>
+`);
+    zip.file(`${pkg}/CMakeLists.txt`, `cmake_minimum_required(VERSION 3.0.2)
+project(${pkg})
+find_package(catkin REQUIRED)
+catkin_package()
+install(DIRECTORY urdf meshes launch DESTINATION \${CATKIN_PACKAGE_SHARE_DESTINATION})
+`);
+    zip.file(`${pkg}/launch/display.launch`, `<launch>
+  <param name="robot_description" textfile="$(find ${pkg})/urdf/${rn}.urdf"/>
+  <node name="joint_state_publisher_gui" pkg="joint_state_publisher_gui" type="joint_state_publisher_gui"/>
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/>
+  <node name="rviz" pkg="rviz" type="rviz"/>
+</launch>
+`);
+  }
+  download(await zip.generateAsync({ type: 'blob' }), `${pkg}.zip`);
+  toast(`Exported ${pkg}.zip (${ros2 ? 'ROS 2' : 'ROS 1'}). Launch: ${ros2 ? `ros2 launch ${pkg} display.launch.py` : `roslaunch ${pkg} display.launch`}`);
+  } catch (err) {
+    console.error(err);
+    toast(`ZIP export failed: ${err?.message || err}`, 'error');
+  }
+}
+
+/* ---------- non-destructive mesh optimization ---------- */
+let optimizingMeshes = false;
+function meshTriangleCount(geometry) {
+  const p = geometry && geometry.attributes && geometry.attributes.position;
+  return p ? Math.floor(p.count / 3) : 0; // project meshes are stored as non-indexed triangle soup
+}
+function fmtCount(value) { return Number(value || 0).toLocaleString(); }
+function estimatedBinaryStlBytes(triangles) { return 84 + Math.max(0, Number(triangles) || 0) * 50; }
+function fmtBytes(bytes) {
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+async function getMeshoptSimplifier() {
+  const deadline = Date.now() + 30000;
+  while (!window.MeshoptSimplifierReady && !window.MeshoptSimplifierLoadError && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 80));
+  }
+  if (window.MeshoptSimplifier) return window.MeshoptSimplifier;
+  if (!window.MeshoptSimplifierReady) throw new Error('The mesh simplifier module did not initialize.');
+  return await window.MeshoptSimplifierReady;
+}
+function geometryFromPositions(array) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(array, 3));
+  g.computeVertexNormals();
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  return g;
+}
+
+// STL is a triangle soup. Weld coincident vertices into an index buffer for the simplifier,
+// but retain the original representative coordinates and emit non-indexed triangles afterward.
+function makeIndexedMesh(geometry) {
+  const attr = geometry && geometry.attributes && geometry.attributes.position;
+  if (!attr || attr.array.length < 12) return null;
+  const src = attr.array;
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < src.length; i += 3) {
+    const x = src[i], y = src[i + 1], z = src[i + 2];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+    minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
+  }
+  const diagonal = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+  const tol = Math.max(diagonal * 1e-7, 1e-10);
+  const vertexMap = new Map(), unique = [], indices = [], seenFaces = new Set();
+  const getVertex = (x, y, z) => {
+    const key = `${Math.round(x / tol)},${Math.round(y / tol)},${Math.round(z / tol)}`;
+    let id = vertexMap.get(key);
+    if (id === undefined) {
+      id = unique.length / 3;
+      vertexMap.set(key, id);
+      unique.push(x, y, z); // keep the exact coordinates of the first matching vertex
+    }
+    return id;
+  };
+  for (let i = 0; i + 8 < src.length; i += 9) {
+    const a = getVertex(src[i], src[i + 1], src[i + 2]);
+    const b = getVertex(src[i + 3], src[i + 4], src[i + 5]);
+    const c = getVertex(src[i + 6], src[i + 7], src[i + 8]);
+    if (a === b || b === c || c === a) continue;
+    const sorted = [a, b, c].sort((x, y) => x - y);
+    const faceKey = `${sorted[0]}:${sorted[1]}:${sorted[2]}`;
+    if (seenFaces.has(faceKey)) continue; // duplicate STL facets add no surface area
+    seenFaces.add(faceKey);
+    indices.push(a, b, c);
+  }
+  if (indices.length < 12 || unique.length < 12) return null;
+  return { positions: new Float32Array(unique), indices: new Uint32Array(indices), triangles: indices.length / 3 };
+}
+function optimizedGeometryFromIndices(positions, indices) {
+  const flat = new Float32Array(indices.length * 3);
+  for (let i = 0; i < indices.length; i++) {
+    const sourceOffset = indices[i] * 3, destOffset = i * 3;
+    flat[destOffset] = positions[sourceOffset];
+    flat[destOffset + 1] = positions[sourceOffset + 1];
+    flat[destOffset + 2] = positions[sourceOffset + 2];
+  }
+  return geometryFromPositions(flat);
+}
+function updateOptimizeMeshTable() {
+  const links = Object.values(S.links).filter(l => l.geometry);
+  const restoreAvailable = links.some(l => l.originalGeometry);
+  $('btn-optimize-restore').disabled = !restoreAvailable || optimizingMeshes;
+  $('btn-optimize-restore').classList.toggle('opacity-40', !restoreAvailable || optimizingMeshes);
+  if (!links.length) {
+    $('opt-table').innerHTML = '<p class="p-3 text-slate-500">No imported meshes yet.</p>';
+    return;
+  }
+  const rows = links.map(l => {
+    const now = meshTriangleCount(l.geometry);
+    const baseline = l.originalGeometry ? meshTriangleCount(l.originalGeometry) : now;
+    const reduction = baseline > 0 ? Math.max(0, (1 - now / baseline) * 100) : 0;
+    const state = l.originalGeometry && now < baseline
+      ? `<span class="text-emerald-300">Optimized · ${reduction.toFixed(1)}% fewer</span>`
+      : '<span class="text-slate-500">Original</span>';
+    return `<tr class="border-b border-slate-800 last:border-0"><td class="px-3 py-2 text-slate-200 break-all">${esc(l.name)}</td><td class="px-3 py-2 text-right font-mono">${fmtCount(now)}</td><td class="px-3 py-2 text-right font-mono text-slate-400">${l.originalGeometry ? fmtCount(baseline) : '—'}</td><td class="px-3 py-2 text-right font-mono">${fmtBytes(estimatedBinaryStlBytes(now))}</td><td class="px-3 py-2 text-right font-mono text-slate-400">${l.originalGeometry ? fmtBytes(estimatedBinaryStlBytes(baseline)) : '—'}</td><td class="px-3 py-2">${state}</td></tr>`;
+  }).join('');
+  $('opt-table').innerHTML = `<div class="overflow-x-auto"><table class="w-full min-w-[720px]"><thead class="sticky top-0 bg-slate-900 text-[10px] uppercase tracking-wide text-slate-500"><tr><th class="px-3 py-2 text-left font-medium">Link / mesh</th><th class="px-3 py-2 text-right font-medium">Current triangles</th><th class="px-3 py-2 text-right font-medium">Original triangles</th><th class="px-3 py-2 text-right font-medium">Est. STL now</th><th class="px-3 py-2 text-right font-medium">Est. STL original</th><th class="px-3 py-2 text-left font-medium">Status</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function openOptimizeMeshes() {
+  $('opt-results').classList.add('hidden');
+  $('opt-status').textContent = 'Original geometry is retained for restore and included in project JSON after optimization.';
+  updateOptimizeMeshTable();
+  $('modal-optimize').classList.remove('hidden');
+}
+async function optimizeAllMeshes() {
+  const runButton = $('btn-optimize-run');
+  const restoreButton = $('btn-optimize-restore');
+  const status = $('opt-status');
+  const resultPanel = $('opt-results');
+  const links = Object.values(S.links).filter(l => l.geometry);
+  if (!links.length) { toast('There are no imported meshes to optimize.', 'warn'); return; }
+  const reductionPercent = Number($('opt-reduction').value) || 50;
+  const errorTolerance = Number($('opt-error').value) || 0.02;
+  optimizingMeshes = true;
+  runButton.disabled = true; restoreButton.disabled = true;
+  runButton.classList.add('opacity-50');
+  const busyButtons = ['btn-optimize-open', 'btn-import', 'btn-load', 'btn-save', 'btn-validate', 'btn-export-urdf', 'btn-export-zip', 'btn-del-link', 'btn-del-joint'];
+  busyButtons.forEach(id => { if ($(id)) $(id).disabled = true; });
+  resultPanel.classList.add('hidden');
+  let simplifier;
+  try {
+    status.textContent = 'Loading mesh simplifier…';
+    simplifier = await getMeshoptSimplifier();
+    let optimized = 0, skipped = 0, beforeTriangles = 0, afterTriangles = 0;
+    const details = [];
+    for (let i = 0; i < links.length; i++) {
+      const link = links[i];
+      status.textContent = `Optimizing ${i + 1} of ${links.length}: ${link.name}…`;
+      await new Promise(resolve => requestAnimationFrame(() => resolve()));
+      const sourceGeometry = link.originalGeometry || link.geometry;
+      const sourceTriangleCount = meshTriangleCount(sourceGeometry);
+      beforeTriangles += meshTriangleCount(sourceGeometry);
+      if (sourceTriangleCount < 5) {
+        skipped++; afterTriangles += meshTriangleCount(link.geometry);
+        details.push(`${link.name}: skipped (too few triangles)`); continue;
+      }
+      let indexed;
+      try { indexed = makeIndexedMesh(sourceGeometry); }
+      catch (err) { console.warn('Could not prepare mesh', link.name, err); indexed = null; }
+      if (!indexed || indexed.triangles < 5) {
+        skipped++; afterTriangles += meshTriangleCount(link.geometry);
+        details.push(`${link.name}: skipped (mesh could not be safely indexed)`); continue;
+      }
+      const targetTriangles = Math.max(4, Math.floor(indexed.triangles * (1 - reductionPercent / 100)));
+      if (targetTriangles >= indexed.triangles) {
+        skipped++; afterTriangles += meshTriangleCount(link.geometry);
+        details.push(`${link.name}: already at the minimum useful size`); continue;
+      }
+      try {
+        const targetIndexCount = targetTriangles * 3;
+        const result = simplifier.simplify(indexed.indices, indexed.positions, 3, targetIndexCount, errorTolerance);
+        const resultIndices = result && result[0] ? result[0] : null;
+        if (!resultIndices || resultIndices.length < 12 || resultIndices.length >= indexed.indices.length) {
+          skipped++; afterTriangles += meshTriangleCount(link.geometry);
+          details.push(`${link.name}: no safe reduction at this error tolerance`); continue;
+        }
+        const nextGeometry = optimizedGeometryFromIndices(indexed.positions, resultIndices);
+        const nextTriangleCount = meshTriangleCount(nextGeometry);
+        if (!Number.isFinite(nextTriangleCount) || nextTriangleCount < 4) {
+          nextGeometry.dispose(); skipped++; afterTriangles += meshTriangleCount(link.geometry);
+          details.push(`${link.name}: skipped (invalid simplified result)`); continue;
+        }
+        // Store the baseline once. Every subsequent optimization is recalculated from it,
+        // so repeated clicks never compound losses from an already reduced mesh.
+        if (!link.originalGeometry) link.originalGeometry = sourceGeometry.clone();
+        const previousGeometry = link.geometry;
+        link.geometry = nextGeometry;
+        if (previousGeometry && previousGeometry !== link.originalGeometry) previousGeometry.dispose();
+        optimized++; afterTriangles += nextTriangleCount;
+        const baseline = meshTriangleCount(link.originalGeometry);
+        details.push(`${link.name}: ${fmtCount(baseline)} → ${fmtCount(nextTriangleCount)} triangles; estimated STL ${fmtBytes(estimatedBinaryStlBytes(baseline))} → ${fmtBytes(estimatedBinaryStlBytes(nextTriangleCount))} (${(100 * (1 - nextTriangleCount / baseline)).toFixed(1)}% triangles reduced)`);
+      } catch (err) {
+        console.warn('Mesh optimization failed for ' + link.name, err);
+        skipped++; afterTriangles += meshTriangleCount(link.geometry);
+        details.push(`${link.name}: failed (${err.message || 'simplification error'})`);
+      }
+      updateOptimizeMeshTable();
+    }
+    if (optimized > 0) {
+      // Keep all link/joint metadata and cached mass properties intact; only displayed mesh geometry changes.
+      refreshAll();
+      const netReduction = beforeTriangles > 0 ? 100 * (1 - afterTriangles / beforeTriangles) : 0;
+      const meshCount = links.length;
+      const beforeStlBytes = meshCount * 84 + beforeTriangles * 50;
+      const afterStlBytes = meshCount * 84 + afterTriangles * 50;
+      resultPanel.innerHTML = `<div class="font-semibold text-emerald-300 mb-1">Optimization complete</div><div>Meshes reduced: <b>${optimized}</b> · Skipped: <b>${skipped}</b> · Triangle change from originals: <b>${netReduction.toFixed(1)}%</b></div><div class="mt-1">Estimated binary STL total: <b>${fmtBytes(beforeStlBytes)}</b> → <b>${fmtBytes(afterStlBytes)}</b> (${fmtBytes(Math.max(0, beforeStlBytes - afterStlBytes))} saved)</div><ul class="mt-2 space-y-1 list-disc pl-4 text-slate-400">${details.map(d => `<li>${esc(d)}</li>`).join('')}</ul>`;
+      resultPanel.classList.remove('hidden');
+      status.textContent = `Done: ${optimized} mesh(es) optimized. Joint settings and origins were not modified.`;
+      toast(`Optimized ${optimized} mesh(es); original geometry retained.`);
+    } else {
+      resultPanel.innerHTML = `<div class="font-semibold text-amber-300 mb-1">No meshes were changed</div><ul class="space-y-1 list-disc pl-4 text-slate-400">${details.map(d => `<li>${esc(d)}</li>`).join('')}</ul>`;
+      resultPanel.classList.remove('hidden');
+      status.textContent = 'No mesh was reduced. Try a less strict error tolerance or a smaller target reduction.';
+    }
+  } catch (err) {
+    console.error(err);
+    const why = window.MeshoptSimplifierLoadError || err;
+    status.textContent = 'Could not load/use the optimizer. Check your internet connection and reload this page.';
+    resultPanel.innerHTML = `<div class="text-rose-300 font-semibold">Optimization failed</div><p class="mt-1 text-slate-400">${esc(why && (why.message || String(why)) || 'Unknown error')}</p>`;
+    resultPanel.classList.remove('hidden');
+    toast('Mesh optimization failed. Original meshes were kept.', 'error');
+  } finally {
+    optimizingMeshes = false;
+    runButton.disabled = false; runButton.classList.remove('opacity-50');
+    busyButtons.forEach(id => { if ($(id)) $(id).disabled = false; });
+    updateOptimizeMeshTable();
+  }
+}
+function restoreOriginalMeshes() {
+  let restored = 0;
+  Object.values(S.links).forEach(link => {
+    if (!link.originalGeometry) return;
+    if (link.geometry && link.geometry !== link.originalGeometry) link.geometry.dispose();
+    link.geometry = link.originalGeometry;
+    link.originalGeometry = null;
+    restored++;
+  });
+  if (restored) {
+    refreshAll();
+    $('opt-results').classList.add('hidden');
+    $('opt-status').textContent = `Restored ${restored} original mesh(es). Other project settings were left unchanged.`;
+    toast(`Restored ${restored} original mesh(es).`);
+  } else {
+    $('opt-status').textContent = 'No original mesh backups are available.';
+  }
+  updateOptimizeMeshTable();
+}
+
+/* ---------- project save / load ---------- */
+function f32ToB64(arr) {
+  const u8 = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength); let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function b64ToF32(b) { const s = atob(b), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return new Float32Array(u.buffer); }
+function saveProject() {
+  const data = { app: 'urdf-studio', version: 4, rotationConvention: 'urdf-rpy-zyx', robotName: S.robotName, pkg: S.pkg, ros: S.ros, root: S.root, uid: S.uid,
+    links: Object.values(S.links).map(l => ({ ...l,
+      geometry: l.geometry ? f32ToB64(l.geometry.attributes.position.array) : null,
+      // The optional baseline lets optimized projects restore the imported meshes after a save/reload.
+      originalGeometry: l.originalGeometry ? f32ToB64(l.originalGeometry.attributes.position.array) : null,
+      // Optimized meshes keep their pre-optimization mass/bounds cache so the mesh-only operation
+      // cannot silently alter inertial values after reloading this JSON.
+      props: l.originalGeometry && l.props ? l.props : undefined })),
+    joints: Object.values(S.joints) };
+  download(new Blob([JSON.stringify(data)], { type: 'application/json' }), `${S.robotName}.urdfstudio.json`);
+}
+async function loadProject(file) {
+  try {
+    const d = JSON.parse(await file.text());
+    if (!d || d.app !== 'urdf-studio') throw new Error('Not a URDF Studio project');
+    if (!Array.isArray(d.links) || !d.links.length || !Array.isArray(d.joints)) throw new Error('Project is missing its links or joints.');
+    const linkIds = new Set();
+    for (const l of d.links) {
+      if (!l || typeof l.id !== 'string' || !l.id || linkIds.has(l.id)) throw new Error('Project contains a missing or duplicate link ID.');
+      linkIds.add(l.id);
+    }
+    if (!linkIds.has(d.root)) throw new Error('Project root link is missing.');
+    const jointIds = new Set();
+    for (const j of d.joints) {
+      if (!j || typeof j.id !== 'string' || !j.id || jointIds.has(j.id)) throw new Error('Project contains a missing or duplicate joint ID.');
+      if (!linkIds.has(j.parent) || !linkIds.has(j.child) || j.parent === j.child) throw new Error(`Joint "${j.name || j.id}" has invalid link references.`);
+      jointIds.add(j.id);
+    }
+    // Older v4 projects were authored with Three.js XYZ rotation interpretation. Convert their
+    // stored RPY values to equivalent ZYX values once, so their physical pose is preserved.
+    if (d.rotationConvention !== 'urdf-rpy-zyx') {
+      d.links.forEach(l => {
+        if (l.visual && Array.isArray(l.visual.rpy)) l.visual.rpy = convertLegacyRPYToURDF(l.visual.rpy);
+      });
+      d.joints.forEach(j => {
+        if (j.origin && Array.isArray(j.origin.rpy)) j.origin.rpy = convertLegacyRPYToURDF(j.origin.rpy);
+      });
+      d.rotationConvention = 'urdf-rpy-zyx';
+    }
+    S.links = {}; S.joints = {};
+    S.robotName = sanitize(d.robotName || 'my_robot'); S.pkg = sanitizePackage(d.pkg || 'my_robot_description');
+    S.ros = d.ros === '1' ? '1' : '2'; S.root = d.root; S.uid = Number.isSafeInteger(d.uid) && d.uid >= 0 ? d.uid : 0;
+    d.links.forEach(l => {
+      const { geometry: savedGeometry, originalGeometry: savedOriginalGeometry, originalGeometryData, props: savedProps, ...linkData } = l;
+      let g = null, originalG = null;
+      if (savedGeometry && typeof savedGeometry === 'string') g = geometryFromPositions(b64ToF32(savedGeometry));
+      const originalB64 = typeof savedOriginalGeometry === 'string' ? savedOriginalGeometry
+        : (typeof originalGeometryData === 'string' ? originalGeometryData : null);
+      if (originalB64) originalG = geometryFromPositions(b64ToF32(originalB64));
+      const validSavedProps = savedProps && typeof savedProps === 'object' && !Array.isArray(savedProps) ? savedProps : null;
+      S.links[l.id] = { ...linkData, geometry: g, originalGeometry: originalG, props: validSavedProps };
+      if (!validSavedProps) computeProps(S.links[l.id]);
+    });
+    d.joints.forEach(j => {
+      if (!j.mimic || typeof j.mimic !== 'object') j.mimic = null;
+      else j.mimic = {
+        jointId: typeof j.mimic.jointId === 'string' ? j.mimic.jointId : '',
+        multiplier: Number.isFinite(Number(j.mimic.multiplier)) ? Number(j.mimic.multiplier) : 1,
+        offset: Number.isFinite(Number(j.mimic.offset)) ? Number(j.mimic.offset) : 0
+      };
+      S.joints[j.id] = j;
+    });
+    $('set-robot').value = S.robotName; $('set-pkg').value = S.pkg; $('set-ros').value = S.ros;
+    S.sel = null; refreshAll(); fitView(); toast('Project loaded.');
+  } catch (e) { console.error(e); toast('Load failed: ' + e.message, 'error'); }
+}
+
+/* ============================================================
+   RESIZABLE SIDE PANELS
+   Panel widths are UI-only and intentionally are not added to the project JSON,
+   so existing URDF Studio v4 save files keep the same format.
+   ============================================================ */
+function initPanelResizers() {
+  const leftPanel = $('left-panel'), rightPanel = $('right-panel');
+
+  const setWidth = (panel, width) => {
+    const w = Math.round(width);
+    panel.style.width = `${w}px`;
+    panel.style.flexBasis = `${w}px`;
+  };
+
+  function setup(handleId, panel, side, min, max) {
+    const handle = $(handleId);
+    handle.setAttribute('aria-valuemin', String(min));
+    handle.setAttribute('aria-valuemax', String(max));
+
+    const updateAria = () => {
+      const width = Math.round(panel.getBoundingClientRect().width);
+      handle.setAttribute('aria-valuenow', String(width));
+      handle.setAttribute('aria-valuetext', `${width} pixels`);
+    };
+
+    handle.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = panel.getBoundingClientRect().width;
+      const pointerId = e.pointerId;
+
+      const move = ev => {
+        if (ev.pointerId !== pointerId) return;
+        const dx = ev.clientX - startX;
+        const proposed = side === 'left' ? startWidth + dx : startWidth - dx;
+        setWidth(panel, Math.max(min, Math.min(max, proposed)));
+        updateAria();
+      };
+      const finish = ev => {
+        if (ev.pointerId !== pointerId) return;
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', finish);
+        handle.removeEventListener('pointercancel', finish);
+        document.body.classList.remove('is-resizing');
+        if (handle.hasPointerCapture && handle.hasPointerCapture(pointerId)) {
+          handle.releasePointerCapture(pointerId);
+        }
+      };
+
+      if (handle.setPointerCapture) handle.setPointerCapture(pointerId);
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', finish);
+      handle.addEventListener('pointercancel', finish);
+      document.body.classList.add('is-resizing');
+    });
+
+    handle.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const dx = e.key === 'ArrowRight' ? 16 : -16;
+      const current = panel.getBoundingClientRect().width;
+      const proposed = side === 'left' ? current + dx : current - dx;
+      setWidth(panel, Math.max(min, Math.min(max, proposed)));
+      updateAria();
+    });
+
+    updateAria();
+  }
+
+  setup('left-resize', leftPanel, 'left', 200, 520);
+  setup('right-resize', rightPanel, 'right', 280, 600);
+}
+
+/* ============================================================
+   WIRING
+   ============================================================ */
+function onNum(id, fn) { $(id).addEventListener('input', () => { const v = parseFloat($(id).value); if (!isNaN(v)) fn(v); }); }
+function setActive(id, on) { $(id).classList.toggle('on', on); }
+
+function shiftMeshData(l, localPoint) {      // move mesh data so localPoint becomes (0,0,0); mesh stays in place
+  const t = new THREE.Vector3(...localPoint);
+  l.geometry.translate(-t.x, -t.y, -t.z);
+  l.visual = matToPose(poseMatrix(l.visual.xyz, l.visual.rpy).multiply(new THREE.Matrix4().makeTranslation(t.x, t.y, t.z)));
+  computeProps(l);
+}
+
+window.onload = () => {
+  // triple inputs
+  document.querySelectorAll('.triple').forEach(el => {
+    const ids = el.dataset.ids.split(','), ph = (el.dataset.ph || 'X,Y,Z').split(','), step = el.dataset.step || 'any';
+    el.className = 'grid grid-cols-3 gap-1.5';
+    el.innerHTML = ids.map((id, i) => `<input type="number" step="${step}" id="${id}" placeholder="${ph[i]}" class="inp">`).join('');
+  });
+  lucide.createIcons();
+
+  // model
+  const root = makeLink('base_link'); S.root = root.id;
+  initThree(); initPanelResizers(); refreshAll();
+
+  // tabs
+  $('tab-btn-tree').onclick = () => { $('tab-tree').classList.remove('hidden'); $('tab-settings').classList.add('hidden'); $('tab-btn-tree').classList.add('tab-active'); $('tab-btn-settings').classList.remove('tab-active'); };
+  $('tab-btn-settings').onclick = () => { $('tab-settings').classList.remove('hidden'); $('tab-tree').classList.add('hidden'); $('tab-btn-settings').classList.add('tab-active'); $('tab-btn-tree').classList.remove('tab-active'); };
+  $('set-robot').oninput = e => S.robotName = sanitize(e.target.value);
+  $('set-pkg').oninput = e => S.pkg = sanitizePackage(e.target.value);
+  $('set-ros').onchange = e => S.ros = e.target.value;
+
+  // header
+  $('btn-import').onclick = () => $('file-mesh').click();
+  $('btn-optimize-open').onclick = openOptimizeMeshes;
+  $('opt-reduction').oninput = () => { $('opt-reduction-label').textContent = `${$('opt-reduction').value}%`; };
+  $('btn-optimize-run').onclick = optimizeAllMeshes;
+  $('btn-optimize-restore').onclick = restoreOriginalMeshes;
+  $('file-mesh').onchange = e => { importFiles(e.target.files); e.target.value = ''; };
+  $('btn-save').onclick = saveProject;
+  $('btn-load').onclick = () => $('file-project').click();
+  $('file-project').onchange = e => { if (e.target.files[0]) { resetPointPickState(); loadProject(e.target.files[0]); } e.target.value = ''; };
+  $('btn-validate').onclick = validateURDF;
+  $('btn-export-urdf').onclick = () => { $('exp-text').value = generateURDF(); $('modal-exp').classList.remove('hidden'); };
+  $('btn-export-zip').onclick = exportZip;
+  document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => $(b.dataset.close).classList.add('hidden'));
+  $('btn-copy').onclick = async () => {
+    const text = $('exp-text').value;
+    try {
+      if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
+      else { $('exp-text').select(); if (!document.execCommand('copy')) throw new Error('Clipboard access was denied'); }
+      toast('URDF copied to clipboard.');
+    } catch (err) { toast(`Copy failed: ${err.message || err}. Select the text and copy it manually.`, 'warn'); }
+  };
+  $('btn-dl').onclick = () => download(new Blob([generateURDF()], { type: 'text/xml' }), `${S.robotName}.urdf`);
+
+  // viewport toolbar
+  const setMode = m => {
+    S.gizmoMode = m; ['select', 'translate', 'rotate'].forEach(k => setActive('tool-' + k, k === m));
+    if (m !== 'select') gizmo.setMode(m); attachGizmo();
+  };
+  $('tool-select').onclick = () => setMode('select'); $('tool-translate').onclick = () => setMode('translate'); $('tool-rotate').onclick = () => setMode('rotate');
+  $('target-joint').onclick = () => { S.editTarget = 'joint'; setActive('target-joint', true); setActive('target-visual', false); attachGizmo(); };
+  $('target-visual').onclick = () => { S.editTarget = 'visual'; setActive('target-joint', false); setActive('target-visual', true); attachGizmo(); };
+  $('btn-keep').onclick = () => { S.keep = !S.keep; setActive('btn-keep', S.keep); };
+  $('btn-grid').onclick = () => { gridHelper.visible = !gridHelper.visible; setActive('btn-grid', gridHelper.visible); };
+  $('btn-frames').onclick = () => { S.showFrames = !S.showFrames; setActive('btn-frames', S.showFrames); rebuildScene(); };
+  $('btn-collision').onclick = () => { S.showCollision = !S.showCollision; setActive('btn-collision', S.showCollision); rebuildScene(); };
+  $('btn-fit').onclick = fitView;
+  window.addEventListener('keydown', e => {
+    if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+    if (e.key === 'q') setMode('select'); if (e.key === 'w') setMode('translate'); if (e.key === 'e') setMode('rotate');
+  });
+
+  // tree actions
+  $('btn-add-link').onclick = () => {
+    const parent = S.sel ? (S.sel.type === 'link' ? S.sel.id : S.joints[S.sel.id].child) : S.root;
+    const l = makeLink('link'); addJoint(parent, l.id, 'revolute');
+    refreshAll(); selectEntity(jointOfChild(l.id).id, 'joint');
+  };
+  $('btn-reset-pose').onclick = () => { Object.values(S.joints).forEach(j => j.value = 0); applyPose(); renderSliders(); };
+
+  // ---- link inspector ----
+  $('l-name').onchange = e => { const l = selLink(); if (!l) return; l.name = uniqueName(e.target.value, 'link', l.id); renderTree(); syncInspector(); };
+  $('l-color').oninput = e => { const l = selLink(); if (!l) return; l.color = e.target.value; const m = visualMap.get(l.id); if (m) m.material.color.set(l.color); };
+  onNum('l-alpha', v => { const l = selLink(); if (!l) return; l.alpha = Math.min(1, Math.max(0, v)); const m = visualMap.get(l.id); if (m) { m.material.opacity = l.alpha; m.material.transparent = l.alpha < 1; } });
+  $('l-collision').onchange = e => { const l = selLink(); if (!l) return; l.collision = e.target.value; rebuildScene(); };
+  ['x', 'y', 'z'].forEach((c, i) => onNum('v-' + c, v => { const l = selLink(); if (!l) return; l.visual.xyz[i] = v; applyPose(); }));
+  ['r', 'p', 'w'].forEach((c, i) => onNum('v-' + c, v => { const l = selLink(); if (!l) return; l.visual.rpy[i] = v; applyPose(); }));
+  $('btn-c-center').onclick = () => { const l = selLink(); if (l && l.props) { shiftMeshData(l, l.props.center); refreshAll(); } };
+  $('btn-c-bottom').onclick = () => { const l = selLink(); if (l && l.props) { const c = l.props.center; shiftMeshData(l, [c[0], c[1], l.props.bbox.min[2]]); refreshAll(); } };
+  $('btn-c-com').onclick = () => { const l = selLink(); if (l && l.props) { shiftMeshData(l, l.props.com); refreshAll(); } };
+  $('btn-edit-incoming').onclick = () => { const l = selLink(), j = l && jointOfChild(l.id); if (j) selectEntity(j.id, 'joint'); };
+  $('btn-link-import').onclick = () => { window._importTarget = S.sel.id; const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.stl,.obj,.step,.stp'; inp.multiple = true; inp.onchange = () => importFiles(inp.files, window._importTarget); inp.click(); };
+
+  const recomputeMass = l => { if (l.props) l.mass = l.props.volume * l.density; };
+  $('l-preset').onchange = e => { const l = selLink(); if (!l || e.target.value === 'custom') return; l.density = +e.target.value; recomputeMass(l); syncInspector(); };
+  onNum('l-density', v => { const l = selLink(); if (!l) return; l.density = v; recomputeMass(l); setVal('l-mass', fp(l.mass)); setVal('l-preset', presetFor(v)); const I = linkInertia(l); ['xx', 'xy', 'xz', 'yy', 'yz', 'zz'].forEach(k => setVal('i-' + k, fp(I['i' + k]))); });
+  onNum('l-mass', v => { const l = selLink(); if (!l) return; l.mass = Math.max(0, v); if (l.props && l.props.volume > 0) { l.density = l.mass / l.props.volume; setVal('l-density', fp(l.density)); setVal('l-preset', presetFor(l.density)); } const I = linkInertia(l); ['xx', 'xy', 'xz', 'yy', 'yz', 'zz'].forEach(k => setVal('i-' + k, fp(I['i' + k]))); });
+  const iKeys = ['xx', 'xy', 'xz', 'yy', 'yz', 'zz'];
+  iKeys.forEach(k => onNum('i-' + k, () => {
+    const l = selLink(); if (!l) return; const o = {};
+    iKeys.forEach(q => o['i' + q] = parseFloat($('i-' + q).value) || 0);
+    l.inertiaOverride = o; $('inertia-state').textContent = 'manual override';
+  }));
+  $('btn-recalc').onclick = () => { const l = selLink(); if (!l) return; computeProps(l); recomputeMass(l); l.inertiaOverride = null; syncInspector(); };
+  $('btn-del-link').onclick = () => {
+    const l = selLink(); if (!l || l.id === S.root) return;
+    const parent = jointOfChild(l.id).parent, kill = descendants(l.id);
+    Object.values(S.joints).forEach(j => { if (kill.has(j.child) || kill.has(j.parent)) delete S.joints[j.id]; });
+    kill.forEach(id => { const link = S.links[id]; if (link) { link.geometry?.dispose(); link.originalGeometry?.dispose(); } delete S.links[id]; });
+    clearBrokenMimicReferences();
+    S.sel = null; refreshAll(); selectEntity(parent, 'link');
+  };
+
+  // ---- joint inspector ----
+  $('j-name').onchange = e => { const j = selJoint(); if (!j) return; j.name = uniqueName(e.target.value, 'joint', j.id); renderTree(); syncInspector(); };
+  $('j-type').onchange = e => {
+    const j = selJoint(); if (!j) return; j.type = e.target.value; j.value = 0;
+    if (j.type === 'fixed') j.mimic = null;
+    if (j.type === 'revolute' && j.limits.lower >= j.limits.upper) { j.limits.lower = -Math.PI / 2; j.limits.upper = Math.PI / 2; }
+    applyPose(); renderTree(); renderSliders(); syncInspector();
+  };
+  $('j-mimic-enabled').onchange = e => {
+    const j = selJoint(); if (!j) return;
+    if (!e.target.checked) {
+      j.mimic = null;
+    } else {
+      const sourceId = $('j-mimic-source').value;
+      const source = S.joints[sourceId];
+      if (!source || source.type === 'fixed' || mimicWouldCycle(j.id, sourceId)) {
+        e.target.checked = false;
+        toast('Choose another valid movable joint as the mimic source.', 'warn');
+        return;
+      }
+      j.mimic = {
+        jointId: sourceId,
+        multiplier: Number.isFinite(parseFloat($('j-mimic-multiplier').value)) ? parseFloat($('j-mimic-multiplier').value) : 1,
+        offset: Number.isFinite(parseFloat($('j-mimic-offset').value)) ? parseFloat($('j-mimic-offset').value) : 0
+      };
+    }
+    applyPose(); renderSliders(); syncInspector();
+  };
+  $('j-mimic-source').onchange = e => {
+    const j = selJoint(); if (!j || !j.mimic) return;
+    const source = S.joints[e.target.value];
+    if (!source || source.type === 'fixed' || mimicWouldCycle(j.id, source.id)) {
+      toast('That source would be invalid or create a mimic cycle.', 'warn'); syncInspector(); return;
+    }
+    j.mimic.jointId = source.id;
+    applyPose(); renderSliders(); syncInspector();
+  };
+  onNum('j-mimic-multiplier', v => {
+    const j = selJoint(); if (!j || !j.mimic) return;
+    j.mimic.multiplier = v; applyPose();
+    $('j-mimic-summary').textContent = `q(${j.name}) = ${v} × q(${S.joints[j.mimic.jointId]?.name || 'MISSING SOURCE'}) + ${Number(j.mimic.offset ?? 0)}. Follower slider is disabled and updates automatically.`;
+  });
+  onNum('j-mimic-offset', v => {
+    const j = selJoint(); if (!j || !j.mimic) return;
+    j.mimic.offset = v; applyPose();
+    $('j-mimic-summary').textContent = `q(${j.name}) = ${Number(j.mimic.multiplier ?? 1)} × q(${S.joints[j.mimic.jointId]?.name || 'MISSING SOURCE'}) + ${v}. Follower slider is disabled and updates automatically.`;
+  });
+  $('j-parent').onchange = e => { const j = selJoint(); if (!j) return; reparent(j, e.target.value); refreshAll(); };
+  const oIds = ['o-x', 'o-y', 'o-z', 'o-r', 'o-p', 'o-w'];
+  oIds.forEach(id => onNum(id, () => {
+    const j = selJoint(); if (!j) return; const v = oIds.map(i => parseFloat($(i).value) || 0);
+    setJointOrigin(j, v.slice(0, 3), v.slice(3), S.keep); applyPose(); syncInspector();
+  }));
+  const frameAt = which => {
+    const j = selJoint(); if (!j) return; const l = S.links[j.child];
+    if (!l.props) { toast('Child link has no mesh.', 'warn'); return; }
+    const wp = visualPoint(l, which === 'com' ? l.props.com : l.props.center).applyMatrix4(linkWorldZero(l.id));
+    const np = wp.applyMatrix4(linkWorldZero(j.parent).invert());
+    setJointOrigin(j, [np.x, np.y, np.z], j.origin.rpy, true); applyPose(); syncInspector();
+  };
+  $('btn-j-center').onclick = () => frameAt('center'); $('btn-j-com').onclick = () => frameAt('com');
+  $('btn-pick-toggle').onclick = () => pointPick.enabled ? stopPointPicking() : startPointPicking();
+  $('btn-pick-A').onclick = () => {
+    const j = selJoint(); if (!j) { toast('Select a joint first.', 'warn'); return; }
+    preparePointPickingForJoint(j); pointPick.group = 'A'; updatePointPickUI();
+    if (!pointPick.enabled) startPointPicking();
+    updatePointPickUI();
+  };
+  $('btn-pick-B').onclick = () => {
+    const j = selJoint(); if (!j) { toast('Select a joint first.', 'warn'); return; }
+    preparePointPickingForJoint(j); pointPick.group = 'B'; updatePointPickUI();
+    if (!pointPick.enabled) startPointPicking();
+    updatePointPickUI();
+  };
+  $('btn-pick-undo').onclick = () => {
+    const j = selJoint(); if (!j) return; preparePointPickingForJoint(j);
+    const g = pointPick.group, marker = pointPick.markers[g].pop();
+    if (!pointPick[g].length) return;
+    pointPick[g].pop(); disposePointMarker(marker); updatePointPickUI();
+  };
+  $('btn-pick-clear-A').onclick = () => { const j = selJoint(); if (!j) return; preparePointPickingForJoint(j); clearPointPickGroup('A'); };
+  $('btn-pick-clear-B').onclick = () => { const j = selJoint(); if (!j) return; preparePointPickingForJoint(j); clearPointPickGroup('B'); };
+  $('btn-pick-position').onclick = placeJointAtPickedCentre;
+  $('btn-pick-axis').onclick = deriveJointAxisFromPickedCentres;
+  $('pick-method').onchange = updatePointPickUI;
+  ['x', 'y', 'z'].forEach((c, i) => onNum('a-' + c, v => { const j = selJoint(); if (!j) return; j.axis[i] = v; applyPose(); }));
+  document.querySelectorAll('[data-axis]').forEach(b => b.onclick = () => { const j = selJoint(); if (!j) return; j.axis = b.dataset.axis.split(',').map(Number); applyPose(); syncInspector(); });
+  onNum('lim-lo', v => { const j = selJoint(); if (j) { j.limits.lower = v / jUnit(j); renderSliders(); } });
+  onNum('lim-hi', v => { const j = selJoint(); if (j) { j.limits.upper = v / jUnit(j); renderSliders(); } });
+  onNum('lim-vel', v => { const j = selJoint(); if (j) j.limits.velocity = v; });
+  onNum('lim-eff', v => { const j = selJoint(); if (j) j.limits.effort = v; });
+  $('btn-del-joint').onclick = () => {
+    const j = selJoint(); if (!j) return; const parent = j.parent, kill = descendants(j.child);
+    Object.values(S.joints).forEach(x => { if (kill.has(x.child) || kill.has(x.parent)) delete S.joints[x.id]; });
+    kill.forEach(id => { const link = S.links[id]; if (link) { link.geometry?.dispose(); link.originalGeometry?.dispose(); } delete S.links[id]; });
+    clearBrokenMimicReferences();
+    S.sel = null; refreshAll(); selectEntity(parent, 'link');
+  };
+
+  selectEntity(S.root, 'link');
+};
+</script>
+</body>
+</html>
